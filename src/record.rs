@@ -1,5 +1,19 @@
 use crc::{Crc, CRC_32_ISO_HDLC};
 use ethnum::U256;
+use zeroize::Zeroize;
+
+/// Write a record to a particular byte slice.
+pub fn write_record(dest: &mut [u8], key: U256, length: usize, value: &[u8]) {
+    assert!(dest.len() == 512);
+    assert!(value.len() <= length);
+    dest.zeroize();
+    let (header, body) = dest.split_at_mut(4 + 32 + 4);
+    // write the body first
+    body[..value.len()].copy_from_slice(value);
+    // then write the header
+    header[4..][32..][..4].copy_from_slice(&length.to_le_bytes());
+    header[4..][..32].copy_from_slice(&key.to_le_bytes());
+}
 
 /// A single on-disk, memory-mapped record.
 pub struct Record<'a>(&'a [u8]);
@@ -38,6 +52,12 @@ impl<'a> Record<'a> {
 
     /// Get the value of the record.
     pub fn value(&self) -> &[u8] {
-        &self.0[4..][32..][4..]
+        let length = self.length();
+        let v = &self.0[4..][32..][4..];
+        if v.len() > length {
+            &v[..length]
+        } else {
+            v
+        }
     }
 }

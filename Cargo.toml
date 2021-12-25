@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 crc = "2.1.0"
 ethnum = "1.0.4"
+zeroize = "1.4.3"
