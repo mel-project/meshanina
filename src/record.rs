@@ -7,12 +7,17 @@ pub fn write_record(dest: &mut [u8], key: U256, length: usize, value: &[u8]) {
     assert!(dest.len() == 512);
     assert!(value.len() <= length);
     dest.zeroize();
-    let (header, body) = dest.split_at_mut(4 + 32 + 4);
-    // write the body first
-    body[..value.len()].copy_from_slice(value);
-    // then write the header
-    header[4..][32..][..4].copy_from_slice(&length.to_le_bytes());
-    header[4..][..32].copy_from_slice(&key.to_le_bytes());
+    // write everything except the checksum
+    {
+        let (header, body) = dest.split_at_mut(4 + 32 + 4);
+        // write the body first
+        body[..value.len()].copy_from_slice(value);
+        // then write the header
+        header[4..][32..][..4].copy_from_slice(&length.to_le_bytes());
+        header[4..][..32].copy_from_slice(&key.to_le_bytes());
+    }
+    let chksum = CRC32.checksum(&dest[4..]);
+    dest[..4].copy_from_slice(&chksum.to_be_bytes());
 }
 
 /// A single on-disk, memory-mapped record.
