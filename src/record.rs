@@ -13,15 +13,15 @@ pub fn write_record(dest: &mut [u8], key: U256, length: usize, value: &[u8]) {
         // write the body first
         body[..value.len()].copy_from_slice(value);
         // then write the header
-        header[4..][32..][..4].copy_from_slice(&length.to_le_bytes());
+        header[4..][32..][..4].copy_from_slice(&(length as u32).to_le_bytes());
         header[4..][..32].copy_from_slice(&key.to_le_bytes());
     }
     let chksum = CRC32.checksum(&dest[4..]);
-    dest[..4].copy_from_slice(&chksum.to_be_bytes());
+    dest[..4].copy_from_slice(&chksum.to_le_bytes());
 }
 
 /// A single on-disk, memory-mapped record.
-pub struct Record<'a>(&'a [u8]);
+pub struct Record<'a>(pub &'a [u8]);
 
 const CRC32: Crc<u32> = Crc::<u32>::new(&CRC_32_ISO_HDLC);
 

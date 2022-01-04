@@ -7,7 +7,7 @@ use parking_lot::RawRwLock as RrLock;
 /// A highly concurrent table of records, the core datastructure in a database. This implements the low-level table structure, without any logic for lookup or insertion.
 pub struct Table {
     /// Sharded locks
-    locks: [CachePadded<RrLock>; 32],
+    locks: Vec<CachePadded<RrLock>>,
     /// Mmapped file
     file: memmap::MmapMut,
     /// Pointer to first element of mmapped file
@@ -15,6 +15,18 @@ pub struct Table {
 }
 
 impl Table {
+    /// Creates a table, given a memmapped file.
+    pub fn new(mut file: memmap::MmapMut) -> Self {
+        let ptr = &mut file[0] as *mut u8;
+        Self {
+            locks: std::iter::repeat_with(|| CachePadded::new(RrLock::INIT))
+                .take(1024)
+                .collect(),
+            file,
+            ptr,
+        }
+    }
+
     /// Gets the given record out of the table, as a record guard that can be read- or write-locked.
     pub fn get(&self, recno: usize) -> Option<RecordGuard<'_>> {
         let lock = self.get_lock(recno);
@@ -33,8 +45,13 @@ impl Table {
         self.file.len() / 512
     }
 
+    /// Flushes the database, blocking until all data is stably on disk.
+    pub fn flush(&self) {
+        self.file.flush().expect("flushing mmap somehow failed");
+    }
+
     fn get_lock(&self, recno: usize) -> &RrLock {
-        &self.locks[recno % 32]
+        &self.locks[recno % self.locks.len()]
     }
 }
 
