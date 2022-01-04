@@ -8,7 +8,7 @@ use ethnum::U256;
 use fs2::FileExt;
 
 use crate::{
-    record::{write_record, Record},
+    record::{write_record, Record, MAX_RECORD_BODYLEN},
     table::Table,
 };
 
@@ -67,7 +67,7 @@ impl Mapping {
 
     /// Inserts a key-value pair. Violating a one-to-one correspondence between keys and values is a **logic error** that may corrupt the database (though it will not cause memory safety failures)
     pub fn insert(&self, key: U256, value: &[u8]) {
-        assert!(value.len() < 500);
+        assert!(value.len() <= MAX_RECORD_BODYLEN);
         let init_posn = hash(key, self.inner.len());
         // Linear probing, but with write-locks.
         for offset in 0.. {

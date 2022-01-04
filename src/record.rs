@@ -2,6 +2,9 @@ use crc::{Crc, CRC_32_ISO_HDLC};
 use ethnum::U256;
 use zeroize::Zeroize;
 
+/// Max size of a record body
+pub const MAX_RECORD_BODYLEN: usize = 472;
+
 /// Write a record to a particular byte slice.
 pub fn write_record(dest: &mut [u8], key: U256, length: usize, value: &[u8]) {
     assert!(dest.len() == 512);

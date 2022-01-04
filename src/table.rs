@@ -20,7 +20,7 @@ impl Table {
         let ptr = &mut file[0] as *mut u8;
         Self {
             locks: std::iter::repeat_with(|| CachePadded::new(RrLock::INIT))
-                .take(1024)
+                .take(128)
                 .collect(),
             file,
             ptr,
