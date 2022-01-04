@@ -1,4 +1,6 @@
+mod mapping;
 mod record;
+mod table;
 
 #[cfg(test)]
 mod tests {
