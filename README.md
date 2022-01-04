@@ -42,3 +42,15 @@ More specifically, when the 4-byte value length is greater than 472, then the "v
 The purpose of the blinding and hidden hashing is make the lower-level key-value relationship one-to-one, assuming the hash function and blinding function are strong.
 
 If there's any missing chunk, then the entire key-value pair is deemed absent.
+
+## Durability
+
+Assuming no "blast radius" (edits to one record cannot corrupt other records), we have the following important property: **once a key is bound to a value, and its records are safely on disk, the binding can never be corrupted no matter how wrongly subsequent writes go**.
+
+Achieving this property is the main reason why Meshanina chooses to use a naive open-addressed hashtable. It's much harder if we use b-trees or other linked data structures, especially without any kind of journaling or crash-recovery mechanism.
+
+## Growing the database.
+
+Eventually, the database will fill. A "full" database can be detected when a write fails to find space after trying, say, more than 10 slots.
+
+In this case, we grow the database by a factor of 2, and copy over all records. This requires a global lock, which is generally fine.

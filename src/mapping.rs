@@ -19,6 +19,9 @@ pub struct Mapping {
     _file: File,
 }
 
+unsafe impl Sync for Mapping {}
+unsafe impl Send for Mapping {}
+
 impl Mapping {
     /// Opens a mapping, given a filename.
     pub fn open(fname: &Path) -> std::io::Result<Self> {
@@ -28,8 +31,8 @@ impl Mapping {
             .create(true)
             .open(fname)?;
         handle.try_lock_exclusive()?;
-        // Create at least a 247.9 GB sparse file.
-        handle.seek(SeekFrom::Start(1 << 38))?;
+        // Create at least 128 slots.
+        handle.seek(SeekFrom::Start(65536))?;
         handle.write(&[0])?;
         handle.seek(SeekFrom::Start(0))?;
         // Now it's safe to memmap the file, because it's EXCLUSIVELY locked to this process.
@@ -88,6 +91,7 @@ impl Mapping {
         log::trace!("inserting key {}, value of length {}", key, value.len());
         if value.len() <= MAX_RECORD_BODYLEN {
             self.insert_atomic(atomic_key(key), value, None)
+                .expect("database is full")
         } else {
             // insert the "top" key
             self.insert_atomic(atomic_key(key), &[], Some(value.len()));
@@ -99,7 +103,7 @@ impl Mapping {
     }
 
     /// Inserts an atomic key-value pair.
-    fn insert_atomic(&self, key: U256, value: &[u8], value_length: Option<usize>) {
+    fn insert_atomic(&self, key: U256, value: &[u8], value_length: Option<usize>) -> Option<()> {
         log::trace!(
             "atomic-inserting key {}, value of length {}",
             key,
@@ -108,11 +112,8 @@ impl Mapping {
         assert!(value.len() <= MAX_RECORD_BODYLEN);
         let init_posn = hash(key, self.inner.len());
         // Linear probing, but with write-locks.
-        for offset in 0.. {
-            let attempt = self
-                .inner
-                .get(init_posn + offset)
-                .expect("ran out of slots");
+        for offset in 0..20 {
+            let attempt = self.inner.get(init_posn + offset)?;
             let mut write_lock = attempt.write();
             let can_overwrite = if let Some(record) = Record(&write_lock).validate() {
                 record.key() == key
@@ -128,9 +129,10 @@ impl Mapping {
                     value,
                 );
                 debug_assert!(Record(&write_lock).validate().is_some());
-                return;
+                return Some(());
             }
         }
+        None
     }
 }
 
@@ -165,9 +167,13 @@ mod tests {
         let test_vector = b"Respondeo dicendum sacram doctrinam esse scientiam. Sed sciendum est quod duplex est scientiarum genus. Quaedam enim sunt, quae procedunt ex principiis notis lumine naturali intellectus, sicut arithmetica, geometria, et huiusmodi. Quaedam vero sunt, quae procedunt ex principiis notis lumine superioris scientiae, sicut perspectiva procedit ex principiis notificatis per geometriam, et musica ex principiis per arithmeticam notis. Et hoc modo sacra doctrina est scientia, quia procedit ex principiis notis lumine superioris scientiae, quae scilicet est scientia Dei et beatorum. Unde sicut musica credit principia tradita sibi ab arithmetico, ita doctrina sacra credit principia revelata sibi a Deo.";
         let fname = PathBuf::from("/tmp/test.db");
         let mapping = Mapping::open(&fname).unwrap();
-        mapping.insert(123u8.into(), b"hello world");
-        assert_eq!(mapping.get(123u8.into()).unwrap().as_ref(), b"hello world");
-        mapping.insert(1234u32.into(), test_vector);
-        assert_eq!(mapping.get(1234u32.into()).unwrap().as_ref(), test_vector);
+        // first test a composite value
+        mapping.insert(0u32.into(), test_vector);
+        assert_eq!(mapping.get(0u32.into()).unwrap().as_ref(), test_vector);
+        // then try to fill the db
+        for i in 1u32..100 {
+            mapping.insert(i.into(), b"hello world");
+            assert_eq!(mapping.get(i.into()).unwrap().as_ref(), b"hello world");
+        }
     }
 }
