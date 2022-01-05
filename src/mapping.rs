@@ -31,8 +31,8 @@ impl Mapping {
             .create(true)
             .open(fname)?;
         handle.try_lock_exclusive()?;
-        // Create at least 128 slots.
-        handle.seek(SeekFrom::Start(65536))?;
+        // Create at least 274.9 GB of empty space.
+        handle.seek(SeekFrom::Start(1 << 38))?;
         handle.write(&[0])?;
         handle.seek(SeekFrom::Start(0))?;
         // Now it's safe to memmap the file, because it's EXCLUSIVELY locked to this process.
