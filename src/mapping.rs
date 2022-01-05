@@ -61,10 +61,10 @@ impl Mapping {
 
     /// Gets an atomic key-value pair.
     fn get_atomic<'a>(&'a self, key: U256) -> Option<(&'a [u8], usize)> {
-        let init_posn = hash(key, self.inner.len());
         // Linear probing
-        for offset in 0.. {
-            let attempt = self.inner.get(init_posn + offset)?;
+        for posn in probe_sequence(key) {
+            let posn = posn % self.inner.len();
+            let attempt = self.inner.get(posn)?;
             let read_lock = attempt.read();
             if let Some(record) = Record(&read_lock).validate() {
                 if record.key() == key {
@@ -110,10 +110,10 @@ impl Mapping {
             value.len()
         );
         assert!(value.len() <= MAX_RECORD_BODYLEN);
-        let init_posn = hash(key, self.inner.len());
         // Linear probing, but with write-locks.
-        for offset in 0..20 {
-            let attempt = self.inner.get(init_posn + offset)?;
+        for posn in probe_sequence(key) {
+            let posn = posn % self.inner.len();
+            let attempt = self.inner.get(posn)?;
             let mut write_lock = attempt.write();
             let can_overwrite = if let Some(record) = Record(&write_lock).validate() {
                 record.key() == key
@@ -140,8 +140,14 @@ unsafe fn extend_lifetime<'b, T: ?Sized>(r: &'b T) -> &'static T {
     std::mem::transmute(r)
 }
 
-fn hash(key: U256, modulo: usize) -> usize {
-    (key % U256::from(modulo as u64)).as_usize()
+/// A probe sequence that tries smaller "subdatabases" first, to try to make things more compact.
+fn probe_sequence(key: U256) -> impl Iterator<Item = usize> {
+    (4..10)
+        .map(|p| 1u64 << (p * 4))
+        .cycle()
+        .enumerate()
+        .map(move |(offset, modulo)| ((key.as_u64() + offset as u64) % modulo) as usize)
+        .take(10000)
 }
 
 // Atomic key
