@@ -23,7 +23,7 @@ Each record takes up exactly 512 bytes, and looks like this:
 - value
 - zero padding to next 512-byte boundary
 
-This, naturally, does not support values that are bigger than 512-4-32-4=**472 bytes**. Bigger values are supported through a separate mechanism, detailed below.
+This, naturally, does not support values that are bigger than 512-4-32-4=**472 bytes**. Bigger values are supported through a separate mechanism.
 
 ## Lookup
 
@@ -31,26 +31,10 @@ We use linear probing: first we modulo the key with the number of records to fin
 
 ## Insertion
 
-We probe for an "empty" space to insert the key. As a special case, if we find a record with identical key, we always overwrite even though the record won't be empty. This is to make the second attempt succeed in writing a key-value pair if the first attempt somehow failed. This is important especially with bigger values, detailed below --- without this overwriting behavior, big values cannot be atomically and idempotently written.
-
-## Bigger values
-
-Bigger values utilize a per-database _hidden_ one-way hash function, `Q`, as well as a per-database reversible blinding function `X` (for example, `Q` can be blake3 keyed hashing with some secret `k`, while `X` can be chacha8 stream-cipher encryption with that same secret key).
-
-More specifically, when the 4-byte value length is greater than 472, then the "value" field in the record is actually empty. Instead, keys `k_1 = Q(key)`, `k_2 = Q(Q(key))`, etc map to the individual chunks of the value, blinded through `X`.
-
-The purpose of the blinding and hidden hashing is make the lower-level key-value relationship one-to-one, assuming the hash function and blinding function are strong.
-
-If there's any missing chunk, then the entire key-value pair is deemed absent.
+We probe for an "empty" space to insert the key. As a special case, if we find a record with identical key, we simply abort insertion.
 
 ## Durability
 
 Assuming no "blast radius" (edits to one record cannot corrupt other records), we have the following important property: **once a key is bound to a value, and its records are safely on disk, the binding can never be corrupted no matter how wrongly subsequent writes go**.
 
 Achieving this property is the main reason why Meshanina chooses to use a naive open-addressed hashtable. It's much harder if we use b-trees or other linked data structures, especially without any kind of journaling or crash-recovery mechanism.
-
-## Growing the database.
-
-Eventually, the database will fill. A "full" database can be detected when a write fails to find space after trying, say, more than 10 slots.
-
-In this case, we grow the database by a factor of 2, and copy over all records. This requires a global lock, which is generally fine.
