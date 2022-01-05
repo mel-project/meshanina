@@ -4,6 +4,8 @@ use cache_padded::CachePadded;
 use parking_lot::lock_api::RawRwLock;
 use parking_lot::RawRwLock as RrLock;
 
+use crate::record::RECORD_SIZE;
+
 /// A highly concurrent table of records, the core datastructure in a database. This implements the low-level table structure, without any logic for lookup or insertion.
 pub struct Table {
     /// Sharded locks
@@ -30,11 +32,11 @@ impl Table {
     /// Gets the given record out of the table, as a record guard that can be read- or write-locked.
     pub fn get(&self, recno: usize) -> Option<RecordGuard<'_>> {
         let lock = self.get_lock(recno);
-        if recno * 512 >= self.file.len() {
+        if recno * RECORD_SIZE >= self.file.len() {
             None
         } else {
             Some(RecordGuard {
-                ptr: unsafe { self.ptr.add(recno * 512) },
+                ptr: unsafe { self.ptr.add(recno * RECORD_SIZE) },
                 lock,
             })
         }
@@ -42,7 +44,7 @@ impl Table {
 
     /// Gets the number of records in the table.
     pub fn len(&self) -> usize {
-        self.file.len() / 512
+        self.file.len() / RECORD_SIZE
     }
 
     /// Flushes the database, blocking until all data is stably on disk.
@@ -64,7 +66,7 @@ impl<'a> RecordGuard<'a> {
     /// Returns a guard that read-locks the record.
     pub fn read(&self) -> impl Deref<Target = [u8]> + '_ {
         self.lock.lock_shared();
-        let slice = unsafe { std::slice::from_raw_parts(self.ptr, 512) };
+        let slice = unsafe { std::slice::from_raw_parts(self.ptr, RECORD_SIZE) };
         RecordReadGuard {
             lock: self.lock,
             inner: slice,
@@ -74,7 +76,7 @@ impl<'a> RecordGuard<'a> {
     /// Returns a guard that write-locks the record.
     pub fn write(&self) -> impl DerefMut<Target = [u8]> + '_ {
         self.lock.lock_exclusive();
-        let slice = unsafe { std::slice::from_raw_parts_mut(self.ptr, 512) };
+        let slice = unsafe { std::slice::from_raw_parts_mut(self.ptr, RECORD_SIZE) };
         RecordWriteGuard {
             lock: self.lock,
             inner: slice,

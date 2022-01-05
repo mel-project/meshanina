@@ -3,11 +3,14 @@ use ethnum::U256;
 use zeroize::Zeroize;
 
 /// Max size of a record body
-pub const MAX_RECORD_BODYLEN: usize = 472;
+pub const MAX_RECORD_BODYLEN: usize = 984;
+
+/// Record size
+pub const RECORD_SIZE: usize = 1024;
 
 /// Write a record to a particular byte slice.
 pub fn write_record(dest: &mut [u8], key: U256, length: usize, value: &[u8]) {
-    assert!(dest.len() == 512);
+    assert!(dest.len() == RECORD_SIZE);
     assert!(value.len() <= length);
     dest.zeroize();
     // write everything except the checksum

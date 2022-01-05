@@ -15,15 +15,15 @@ Database files are fixed-size. When they fill up, a new one twice as big is crea
 
 ## Record
 
-Each record takes up exactly 512 bytes, and looks like this:
+Each record takes up exactly 1024 bytes, and looks like this:
 
 - 4-bytes crc32 checksum of record
 - 32-byte key
 - 4-byte value length
 - value
-- zero padding to next 512-byte boundary
+- zero padding to next 1024-byte boundary
 
-This, naturally, does not support values that are bigger than 512-4-32-4=**472 bytes**. Bigger values are supported through a separate mechanism.
+This, naturally, does not support values that are bigger than 512-4-32-4=**984 bytes**. Bigger values are supported through a separate mechanism.
 
 ## Lookup
 

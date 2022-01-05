@@ -43,6 +43,11 @@ impl Mapping {
         })
     }
 
+    /// Flushes the mapping to disk.
+    pub fn flush(&self) {
+        self.inner.flush()
+    }
+
     /// Gets a key-value pair.
     pub fn get<'a>(&'a self, key: U256) -> Option<Cow<'a, [u8]>> {
         log::trace!("getting key {}", key);
