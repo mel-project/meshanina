@@ -116,7 +116,11 @@ impl Mapping {
             let attempt = self.inner.get(posn)?;
             let mut write_lock = attempt.write();
             let can_overwrite = if let Some(record) = Record(&write_lock).validate() {
-                record.key() == key
+                if record.key() == key {
+                    return Some(());
+                } else {
+                    false
+                }
             } else {
                 true
             };
