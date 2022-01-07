@@ -117,6 +117,7 @@ impl Mapping {
         assert!(value.len() <= MAX_RECORD_BODYLEN);
         // Linear probing, but with write-locks.
         for posn in probe_sequence(key) {
+            log::trace!("trying position {} for key {}", posn, key);
             let posn = posn % self.inner.len();
             let attempt = self.inner.get(posn)?;
             let mut write_lock = attempt.write();
