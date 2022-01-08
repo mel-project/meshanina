@@ -8,17 +8,21 @@ fn main() {
         .create(false)
         .open(fname)
         .unwrap();
-    let mut chunk = [0; 65536];
+    let mut chunk = [0; 1024 * 128];
     let mut count = 0;
     while handle.read_exact(&mut chunk).is_ok() {
-        if chunk == [0; 65536] {
-            eprint!(" ");
-        } else {
-            eprint!("-")
-        }
-        if count % 100 == 0 {
-            eprintln!();
-        }
         count += 1;
+        if chunk == [0; 1024 * 128] {
+            continue;
+        }
+        eprintln!();
+        eprint!("{}\t", count * 128);
+        for chunk in chunk.chunks(1024) {
+            if chunk == [0; 1024] {
+                eprint!(" ");
+            } else {
+                eprint!("-")
+            }
+        }
     }
 }
