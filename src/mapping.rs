@@ -17,7 +17,7 @@ use crate::{
 /// Concurrent hashtable that represents the database.
 pub struct Mapping {
     inner: Table,
-    atomic_cache: DashMap<U256, (*const u8, usize, usize)>,
+    atomic_cache: DashMap<u32, (U256, *const u8, usize, usize)>,
     _file: File,
 }
 
@@ -69,8 +69,11 @@ impl Mapping {
 
     /// Gets an atomic key-value pair.
     fn get_atomic<'a>(&'a self, key: U256) -> Option<(&'a [u8], usize)> {
-        if let Some((ptr, len, outlen)) = self.atomic_cache.get(&key).map(|f| *f) {
-            return Some((unsafe { std::slice::from_raw_parts(ptr, len) }, outlen));
+        let cache_key = (key.as_u32() ^ 0xdeadbeef) & 0xffffff;
+        if let Some((ckey, ptr, len, outlen)) = self.atomic_cache.get(&cache_key).map(|f| *f) {
+            if ckey == key {
+                return Some((unsafe { std::slice::from_raw_parts(ptr, len) }, outlen));
+            }
         }
         // Linear probing
         for posn in probe_sequence(key) {
@@ -87,8 +90,9 @@ impl Mapping {
                     // SAFETY: once a record is safely on-disk, there's no way it can ever change again.
                     // Therefore, we can let go of the read-lock and return a unlocked byteslice reference.
                     self.atomic_cache.insert(
-                        key,
+                        cache_key,
                         (
+                            key,
                             (&record.value()[0]) as *const u8,
                             record.value().len(),
                             record.length(),
