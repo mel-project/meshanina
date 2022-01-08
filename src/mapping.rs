@@ -5,6 +5,7 @@ use std::{
     path::Path,
 };
 
+use dashmap::DashMap;
 use ethnum::U256;
 use fs2::FileExt;
 
@@ -16,6 +17,7 @@ use crate::{
 /// Concurrent hashtable that represents the database.
 pub struct Mapping {
     inner: Table,
+    atomic_cache: DashMap<U256, (*const u8, usize, usize)>,
     _file: File,
 }
 
@@ -39,6 +41,7 @@ impl Mapping {
         let memmap = unsafe { memmap::MmapMut::map_mut(&handle)? };
         Ok(Mapping {
             inner: Table::new(memmap),
+            atomic_cache: DashMap::new(),
             _file: handle,
         })
     }
@@ -66,6 +69,9 @@ impl Mapping {
 
     /// Gets an atomic key-value pair.
     fn get_atomic<'a>(&'a self, key: U256) -> Option<(&'a [u8], usize)> {
+        if let Some((ptr, len, outlen)) = self.atomic_cache.get(&key).map(|f| *f) {
+            return Some((unsafe { std::slice::from_raw_parts(ptr, len) }, outlen));
+        }
         // Linear probing
         for posn in probe_sequence(key) {
             let posn = posn % self.inner.len();
@@ -80,6 +86,14 @@ impl Mapping {
                     );
                     // SAFETY: once a record is safely on-disk, there's no way it can ever change again.
                     // Therefore, we can let go of the read-lock and return a unlocked byteslice reference.
+                    self.atomic_cache.insert(
+                        key,
+                        (
+                            (&record.value()[0]) as *const u8,
+                            record.value().len(),
+                            record.length(),
+                        ),
+                    );
                     unsafe {
                         return Some((extend_lifetime(record.value()), record.length()));
                     }
