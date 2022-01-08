@@ -152,11 +152,11 @@ unsafe fn extend_lifetime<'b, T: ?Sized>(r: &'b T) -> &'static T {
 
 /// A probe sequence that tries smaller "subdatabases" first, to try to make things more compact.
 fn probe_sequence(key: U256) -> impl Iterator<Item = usize> {
-    (4..10)
-        .map(|p| 1u64 << (p * 4))
+    (16..40)
+        .map(|p| 1u64 << p)
         .cycle()
         .enumerate()
-        .map(move |(offset, modulo)| ((key.as_u64() + offset as u64) % modulo) as usize)
+        .map(move |(offset, modulo)| ((key.as_u64()) % (modulo as u64 + offset as u64)) as usize)
         .take(10000)
 }
 
