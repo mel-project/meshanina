@@ -72,9 +72,11 @@ impl Mapping {
         let cache_key = (key.as_u32() ^ 0xdeadbeef) & ((1 << 18) - 1);
         if let Some((ckey, ptr, len, outlen)) = self.atomic_cache.get(&cache_key).map(|f| *f) {
             if ckey == key {
+                log::trace!("HIT {}", key);
                 return Some((unsafe { std::slice::from_raw_parts(ptr, len) }, outlen));
             }
         }
+        log::trace!("MISS {}", key);
         // Linear probing
         for posn in probe_sequence(key) {
             let posn = posn % self.inner.len();
@@ -132,6 +134,7 @@ impl Mapping {
             key,
             value.len()
         );
+        let cache_key = (key.as_u32() ^ 0xdeadbeef) & ((1 << 18) - 1);
         assert!(value.len() <= MAX_RECORD_BODYLEN);
         // Linear probing, but with write-locks.
         for posn in probe_sequence(key) {
@@ -156,7 +159,16 @@ impl Mapping {
                     value_length.unwrap_or_else(|| value.len()),
                     value,
                 );
-                debug_assert!(Record(&write_lock).validate().is_some());
+                let record = Record(&write_lock);
+                self.atomic_cache.insert(
+                    cache_key,
+                    (
+                        key,
+                        (&record.value()[0]) as *const u8,
+                        record.value().len(),
+                        record.length(),
+                    ),
+                );
                 return Some(());
             }
         }
@@ -175,6 +187,7 @@ fn probe_sequence(key: U256) -> impl Iterator<Item = usize> {
         .cycle()
         .enumerate()
         .map(move |(offset, (start, end))| {
+            log::trace!("sequence at offset {}", offset);
             (start + ((key.as_u64() + offset as u64) % (end - start))) as usize
         })
         .take(10000)
