@@ -44,7 +44,8 @@ impl<'a> Record<'a> {
 
     /// Validates the checksum of the record.
     pub fn validate(self) -> Option<Self> {
-        if self.crc32() == self.correct_crc32() {
+        let crc = self.correct_crc32();
+        if crc > 0 && self.crc32() == self.correct_crc32() {
             Some(self)
         } else {
             None
