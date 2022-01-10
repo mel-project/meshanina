@@ -44,12 +44,16 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("get 5000 par", |b| {
         b.iter(|| bench_gets(black_box(5000), true))
     });
-    c.bench_function("get 50000 seq", |b| {
-        b.iter(|| bench_gets(black_box(50000), false))
+    std::env::set_var("MESHANINA_OWNED_CACHE", "1");
+    c.bench_function("get 5000 par cached", |b| {
+        b.iter(|| bench_gets(black_box(5000), true))
     });
-    c.bench_function("get 50000 par", |b| {
-        b.iter(|| bench_gets(black_box(50000), true))
-    });
+    // c.bench_function("get 50000 seq", |b| {
+    //     b.iter(|| bench_gets(black_box(50000), false))
+    // });
+    // c.bench_function("get 50000 par", |b| {
+    //     b.iter(|| bench_gets(black_box(50000), true))
+    // });
 }
 
 criterion_group!(benches, criterion_benchmark);

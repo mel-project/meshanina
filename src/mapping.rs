@@ -18,6 +18,9 @@ use crate::{
 pub struct Mapping {
     inner: Table,
     atomic_cache: DashMap<u32, (U256, *const u8, usize, usize)>,
+    /// Cache
+    owned_cache: DashMap<u32, (U256, Vec<u8>)>,
+    use_owned_cache: bool,
     _file: File,
 }
 
@@ -42,6 +45,8 @@ impl Mapping {
         Ok(Mapping {
             inner: Table::new(memmap),
             atomic_cache: DashMap::new(),
+            owned_cache: DashMap::new(),
+            use_owned_cache: std::env::var("MESHANINA_OWNED_CACHE").is_ok(),
             _file: handle,
         })
     }
@@ -53,9 +58,22 @@ impl Mapping {
 
     /// Gets a key-value pair.
     pub fn get<'a>(&'a self, key: U256) -> Option<Cow<'a, [u8]>> {
+        let cache_key = (key.as_u32() ^ 0xdeadbeef) & ((1 << 18) - 1);
+        if self.use_owned_cache {
+            if let Some((ckey, bts)) = self.owned_cache.get(&cache_key).map(|f| f.clone()) {
+                if ckey == key {
+                    log::trace!("HIT OWNED {}", key);
+                    return Some(bts.into());
+                }
+            }
+        }
         log::trace!("getting key {}", key);
         let (top, top_length) = self.get_atomic(atomic_key(key))?;
         if top_length <= MAX_RECORD_BODYLEN {
+            if self.use_owned_cache {
+                self.owned_cache
+                    .insert(cache_key, (key, top.to_vec().into()));
+            }
             Some(Cow::Borrowed(top))
         } else {
             let mut toret = vec![0u8; top_length];

@@ -10,6 +10,7 @@ use crate::record::RECORD_SIZE;
 pub struct Table {
     /// Sharded locks
     locks: Vec<CachePadded<RrLock>>,
+
     /// Mmapped file
     file: memmap::MmapMut,
     /// Pointer to first element of mmapped file
