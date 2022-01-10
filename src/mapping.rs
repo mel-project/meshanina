@@ -131,6 +131,10 @@ impl Mapping {
 
     /// Inserts a key-value pair. Violating a one-to-one correspondence between keys and values is a **logic error** that may corrupt the database (though it will not cause memory safety failures)
     pub fn insert(&self, key: U256, value: &[u8]) {
+        let cache_key = (key.as_u32() ^ 0xdeadbeef) & ((1 << 18) - 1);
+        if self.use_owned_cache {
+            self.owned_cache.insert(cache_key, (key, value.to_vec()));
+        }
         log::trace!("inserting key {}, value of length {}", key, value.len());
         if value.len() <= MAX_RECORD_BODYLEN {
             self.insert_atomic(atomic_key(key), value, None)
