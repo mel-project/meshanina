@@ -8,7 +8,6 @@ use std::{
 use dashmap::DashMap;
 use ethnum::U256;
 use fs2::FileExt;
-use once_cell::sync::Lazy;
 
 use crate::{
     record::{write_record, Record, MAX_RECORD_BODYLEN},
