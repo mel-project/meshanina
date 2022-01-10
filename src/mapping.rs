@@ -8,6 +8,7 @@ use std::{
 use dashmap::DashMap;
 use ethnum::U256;
 use fs2::FileExt;
+use once_cell::sync::Lazy;
 
 use crate::{
     record::{write_record, Record, MAX_RECORD_BODYLEN},
@@ -69,7 +70,7 @@ impl Mapping {
 
     /// Gets an atomic key-value pair.
     fn get_atomic<'a>(&'a self, key: U256) -> Option<(&'a [u8], usize)> {
-        let cache_key = (key.as_u32() ^ 0xdeadbeef) & 0xffffff;
+        let cache_key = (key.as_u32() ^ 0xdeadbeef) & ((1 << 18) - 1);
         if let Some((ckey, ptr, len, outlen)) = self.atomic_cache.get(&cache_key).map(|f| *f) {
             if ckey == key {
                 return Some((unsafe { std::slice::from_raw_parts(ptr, len) }, outlen));
