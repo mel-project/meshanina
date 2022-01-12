@@ -1,6 +1,6 @@
 [package]
 name = "meshanina"
-version = "0.2.10-alpha.0"
+version = "0.3.0-alpha.0"
 authors = ["nullchinchilla <nullchinchilla@pm.me>"]
 edition = "2021"
 description="Content-addressed memory-mapped database based on a huge sparse file"
@@ -21,6 +21,7 @@ blake3 = "1.2.0"
 fastrand = "1.6.0"
 dashmap = "5.0.0"
 libc = "0.2.112"
+arrayref="0.3"
 
 [dev-dependencies]
 criterion = "0.3"

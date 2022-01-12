@@ -3,12 +3,16 @@ use std::{
     fs::File,
     io::{Seek, SeekFrom, Write},
     path::Path,
+    sync::atomic::AtomicUsize,
 };
 
+use arrayref::{array_mut_ref, array_ref};
 use dashmap::DashMap;
 use ethnum::U256;
 use fs2::FileExt;
 use libc::MADV_RANDOM;
+use memmap::{MmapMut, MmapOptions};
+use parking_lot::RwLock;
 
 use crate::{
     record::{write_record, Record, MAX_RECORD_BODYLEN},
@@ -18,10 +22,8 @@ use crate::{
 /// Concurrent hashtable that represents the database.
 pub struct Mapping {
     inner: Table,
+    alloc_mmap: RwLock<MmapMut>,
     atomic_cache: DashMap<u32, (U256, *const u8, usize, usize)>,
-    /// Cache
-    owned_cache: DashMap<u32, (U256, Vec<u8>)>,
-    use_owned_cache: bool,
     _file: File,
 }
 
@@ -43,45 +45,44 @@ impl Mapping {
         handle.seek(SeekFrom::Start(0))?;
 
         // Now it's safe to memmap the file, because it's EXCLUSIVELY locked to this process.
-        let mut memmap = unsafe { memmap::MmapMut::map_mut(&handle)? };
-
+        let mut table_mmap = unsafe { MmapOptions::new().offset(1 << 30).map_mut(&handle)? };
         #[cfg(target_os = "linux")]
         unsafe {
-            libc::madvise(&mut memmap[0] as *mut u8 as _, memmap.len(), MADV_RANDOM);
+            libc::madvise(
+                &mut table_mmap[0] as *mut u8 as _,
+                table_mmap.len(),
+                MADV_RANDOM,
+            );
         }
 
+        let alloc_mmap = unsafe { MmapOptions::new().len(1 << 30).map_mut(&handle)? };
+        // #[cfg(target_os = "linux")]
+        // unsafe {
+        //     libc::madvise(
+        //         &mut alloc_mmap[0] as *mut u8 as _,
+        //         alloc_mmap.len(),
+        //         MADV_RANDOM,
+        //     );
+        // }
+
         Ok(Mapping {
-            inner: Table::new(memmap),
+            inner: Table::new(table_mmap),
             atomic_cache: DashMap::new(),
-            owned_cache: DashMap::new(),
-            use_owned_cache: std::env::var("MESHANINA_OWNED_CACHE").is_ok(),
+            alloc_mmap: RwLock::new(alloc_mmap),
             _file: handle,
         })
     }
 
     /// Flushes the mapping to disk.
     pub fn flush(&self) {
-        self.inner.flush()
+        self.inner.flush();
     }
 
     /// Gets a key-value pair.
     pub fn get<'a>(&'a self, key: U256) -> Option<Cow<'a, [u8]>> {
-        let cache_key = (key.as_u32() ^ 0xdeadbeef) & ((1 << 18) - 1);
-        if self.use_owned_cache {
-            if let Some((ckey, bts)) = self.owned_cache.get(&cache_key).map(|f| f.clone()) {
-                if ckey == key {
-                    log::trace!("HIT OWNED {}", key);
-                    return Some(bts.into());
-                }
-            }
-        }
         log::trace!("getting key {}", key);
         let (top, top_length) = self.get_atomic(atomic_key(key))?;
         if top_length <= MAX_RECORD_BODYLEN {
-            if self.use_owned_cache {
-                self.owned_cache
-                    .insert(cache_key, (key, top.to_vec().into()));
-            }
             Some(Cow::Borrowed(top))
         } else {
             let mut toret = vec![0u8; top_length];
@@ -91,6 +92,18 @@ impl Mapping {
             }
             Some(Cow::Owned(toret))
         }
+    }
+
+    /// Gets the allocation pointer, returning a potentially free allocation point.
+    fn get_alloc_ptr(&self) -> usize {
+        let mm = self.alloc_mmap.read();
+        u64::from_le_bytes(*array_ref![mm, 0, 8]) as usize
+    }
+
+    /// Sets the allocation pointer, given something known to be free.
+    fn set_alloc_ptr(&self, ptr: usize) {
+        let mut mm = self.alloc_mmap.write();
+        mm[0..8].copy_from_slice(&(ptr as u64).to_le_bytes());
     }
 
     /// Gets an atomic key-value pair.
@@ -103,46 +116,37 @@ impl Mapping {
             }
         }
         log::trace!("MISS {}", key);
-        // Linear probing
+        let map = self.alloc_mmap.read();
         for posn in probe_sequence(key) {
-            let posn = posn % self.inner.len();
-            let attempt = self.inner.get(posn)?;
-            let read_lock = attempt.read();
-            if let Some(record) = Record(&read_lock).validate() {
-                if record.key() == key {
-                    log::trace!(
-                        "found atomic key {}, bound to value of length {}",
-                        key,
-                        record.length()
-                    );
-                    // SAFETY: once a record is safely on-disk, there's no way it can ever change again.
-                    // Therefore, we can let go of the read-lock and return a unlocked byteslice reference.
-                    self.atomic_cache.insert(
-                        cache_key,
-                        (
-                            key,
-                            (&record.value()[0]) as *const u8,
-                            record.value().len(),
-                            record.length(),
-                        ),
-                    );
-                    unsafe {
-                        return Some((extend_lifetime(record.value()), record.length()));
-                    }
-                }
-            } else {
-                return None;
+            let offset = (posn % (map.len() / 8)) * 8;
+            let offset = u64::from_le_bytes(*array_ref![map, offset, 8]) as usize;
+            if offset == 0 {
+                break;
+            }
+            let potential_record = self.inner.get(offset)?;
+            let record = potential_record.read();
+            let record = Record(&record).validate()?;
+            if record.key() != key {
+                continue;
+            }
+            self.atomic_cache.insert(
+                cache_key,
+                (
+                    key,
+                    (&record.value()[0]) as *const u8,
+                    record.value().len(),
+                    record.length(),
+                ),
+            );
+            unsafe {
+                return Some((extend_lifetime(record.value()), record.length()));
             }
         }
-        unreachable!()
+        None
     }
 
     /// Inserts a key-value pair. Violating a one-to-one correspondence between keys and values is a **logic error** that may corrupt the database (though it will not cause memory safety failures)
     pub fn insert(&self, key: U256, value: &[u8]) {
-        let cache_key = (key.as_u32() ^ 0xdeadbeef) & ((1 << 18) - 1);
-        if self.use_owned_cache {
-            self.owned_cache.insert(cache_key, (key, value.to_vec()));
-        }
         log::trace!("inserting key {}, value of length {}", key, value.len());
         if value.len() <= MAX_RECORD_BODYLEN {
             self.insert_atomic(atomic_key(key), value, None)
@@ -159,47 +163,49 @@ impl Mapping {
 
     /// Inserts an atomic key-value pair.
     fn insert_atomic(&self, key: U256, value: &[u8], value_length: Option<usize>) -> Option<()> {
-        log::trace!(
-            "atomic-inserting key {}, value of length {}",
-            key,
-            value.len()
-        );
-        let cache_key = (key.as_u32() ^ 0xdeadbeef) & ((1 << 18) - 1);
-        assert!(value.len() <= MAX_RECORD_BODYLEN);
-        // Linear probing, but with write-locks.
+        let ptr = self.get_alloc_ptr();
+        let mut map = self.alloc_mmap.write();
         for posn in probe_sequence(key) {
-            log::trace!("trying position {} for key {}", posn, key);
-            let posn = posn % self.inner.len();
-            let attempt = self.inner.get(posn)?;
-            let mut write_lock = attempt.write();
-            let can_overwrite = if let Some(record) = Record(&write_lock).validate() {
-                if record.key() == key {
-                    return Some(());
-                } else {
-                    false
-                }
-            } else {
+            // dbg!(posn);
+            let offset = (posn % (map.len() / 8)) * 8;
+            let offset_ptr = array_mut_ref![map, offset, 8];
+            let should_overwrite = if *offset_ptr == [0; 8] {
                 true
+            } else {
+                let offset = u64::from_le_bytes(*offset_ptr) as usize;
+                let record = self.inner.get(offset).expect("wtf");
+                let record = record.read();
+                if let Some(record) = Record(&record).validate() {
+                    if record.key() == key {
+                        return Some(());
+                    }
+                    false
+                } else {
+                    true
+                }
             };
-            if can_overwrite {
-                // This means that we found an empty slot of some sort. We can therefore write a record.
-                write_record(
-                    &mut write_lock,
-                    key,
-                    value_length.unwrap_or_else(|| value.len()),
-                    value,
-                );
-                let record = Record(&write_lock);
-                self.atomic_cache.insert(
-                    cache_key,
-                    (
+            if should_overwrite {
+                for offset in 0.. {
+                    if ptr + offset == 0 {
+                        continue;
+                    }
+                    let slot = self.inner.get(ptr + offset)?;
+                    let mut slot = slot.write();
+                    if Record(&slot).validate().is_some() {
+                        continue;
+                    }
+                    write_record(
+                        &mut slot,
                         key,
-                        (&record.value()[0]) as *const u8,
-                        record.value().len(),
-                        record.length(),
-                    ),
-                );
-                return Some(());
+                        value_length.unwrap_or_else(|| value.len()),
+                        value,
+                    );
+                    *offset_ptr = ((ptr + offset) as u64).to_le_bytes();
+                    drop(map);
+                    self.set_alloc_ptr(ptr + offset + 1);
+
+                    return Some(());
+                }
             }
         }
         None
@@ -210,7 +216,7 @@ unsafe fn extend_lifetime<'b, T: ?Sized>(r: &'b T) -> &'static T {
     std::mem::transmute(r)
 }
 
-/// A probe sequence that tries smaller "subdatabases" first, to try to make things more compact.
+/// A probe sequence.
 fn probe_sequence(key: U256) -> impl Iterator<Item = usize> {
     (16..40)
         .map(|p| (1u64 << p, 1u64 << (p + 1)))
@@ -222,7 +228,6 @@ fn probe_sequence(key: U256) -> impl Iterator<Item = usize> {
         })
         .take(10000)
 }
-
 // Atomic key
 fn atomic_key(key: U256) -> U256 {
     U256::from_le_bytes(*blake3::hash(&key.to_le_bytes()).as_bytes())
@@ -243,7 +248,8 @@ mod tests {
 
     #[test]
     fn simple_insert_get() {
-        let test_vector = b"Respondeo dicendum sacram doctrinam esse scientiam. Sed sciendum est quod duplex est scientiarum genus. Quaedam enim sunt, quae procedunt ex principiis notis lumine naturali intellectus, sicut arithmetica, geometria, et huiusmodi. Quaedam vero sunt, quae procedunt ex principiis notis lumine superioris scientiae, sicut perspectiva procedit ex principiis notificatis per geometriam, et musica ex principiis per arithmeticam notis. Et hoc modo sacra doctrina est scientia, quia procedit ex principiis notis lumine superioris scientiae, quae scilicet est scientia Dei et beatorum. Unde sicut musica credit principia tradita sibi ab arithmetico, ita doctrina sacra credit principia revelata sibi a Deo.";
+        let test_vector = b"[63] Super Sent., lib. 1 d. 1 q. 1 pr. Finito prooemio, hoc est initium praesentis operis in quo Magister divinorum nobis doctrinam tradere intendit quantum ad inquisitionem veritatis et destructionem erroris: unde et argumentativo modo procedit in toto opere: et praecipue argumentis ex auctoritatibus sumptis. Dividitur autem in duas partes: in quarum prima inquirit ea de quibus agendum est, et ordinem agendi; in secunda prosequitur suam intentionem: et in duas partes dividitur. Secunda ibi: hic considerandum est utrum virtutibus sit utendum, an fruendum. Ea autem de quibus in hac doctrina considerandum est, cadunt in considerationem hujus doctrinae, secundum quod ad aliquid unum referuntur, scilicet Deum, a quo et ad quem sunt. Et ideo ea de quibus agendum est dividit per absolutum et relatum: unde dividitur in partes duas. In prima ponit divisionem eorum de quibus agendum est per absolutum et relatum secundum cognitionem, in secunda secundum desiderium, ibi: id ergo in rebus considerandum. Circa primum duo facit. Primo ponit divisionem eorum de quibus agendum est, in res et signa, quae ad cognitionem rerum ducunt; secundo concludit ordinem agendi, ibi: cumque his intenderit theologorum speculatio studiosa atque modesta, divinam Scripturam formam praescriptam in doctrina tenere advertet. In primo tria facit. Primo ponit divisionem; secundo probat per auctoritatem, ibi: ut enim egregius doctor Augustinus ait; tertio ponit membrorum divisionis expositionem, ibi: proprie autem hic res appellantur quae non ad significandum aliquid adhibentur: ubi primo exponit quid sit res; secundo quid sit signum, ibi: signa vero quorum usus est in significando; tertio utriusque comparationem, ibi: omne igitur signum etiam res aliqua est. Id ergo in rebus considerandum est. Hic, dimissis signis, subdividit res per absolutum et relatum ex parte desiderii, scilicet per fruibile, quod propter se desideratur, et utibile, cujus desiderium ad aliud refertur: et dividitur in partes duas. Primo ponit divisionem; secundo epilogat et concludit intentionem et ordinem, ibi: omnium igitur quae dicta sunt, ex quo de rebus specialiter tractavimus, haec summa est. Prima in tres. Primo ponit divisionem; secundo partium manifestationem, ibi: illa quibus fruendum est, nos beatos faciunt; tertio movet dubitationes, ibi: cum autem homines, qui fruuntur et utuntur aliis rebus, res aliquae sint, quaeritur utrum se frui debeant, an uti, an utrumque. In secunda duo facit. Primo manifestat divisionem; secundo ponit quamdam contrarietatem, et solvit, ibi: notandum vero, quod idem Augustinus (...) sic dicit. Circa primum duo facit. Primo manifestat partes divisionis per definitiones; secundo quantum ad supposita, ibi: res igitur quibus fruendum est, sunt pater, et filius, et spiritus sanctus. Circa primum quatuor facit. Primo definit fruibilia per effectum; secundo utibilia, ibi: istis quibus utendum est, tendentes ad beatitudinem adjuvamur; tertio definit utentia, et fruentia ibi: res vero quae fruuntur et utuntur, nos sumus; quarto definit uti et frui ad probationem totius: frui autem est amore alicui rei inhaerere propter seipsam. Et eodem ordine procedit manifestando secundum supposita. Notandum vero, quod idem Augustinus (...) aliter quam supra accipiens frui et uti, sic dicit. Hic ponit contrarietatem ad haec tria. Primo ponit diversam assignationem uti et frui; secundo concludit contrarietatem ad praedicta, ibi: et attende, quod videtur Augustinus dicere illos frui tantum qui in re gaudent; tertio ponit solutionem, ibi: haec ergo quae sibi contradicere videntur, sic determinamus. Et primo solvit per divisionem; secundo per interemptionem, ibi: potest etiam dici, quod qui fruitur etiam in hac vita non tantum habet gaudium spei, sed etiam rei. Cum autem homines, qui fruuntur et utuntur aliis rebus, res aliquae sint, quaeritur, utrum se frui debeant, an uti, an utrumque. Hic movet dubitationes de habitudine eorum quae pertinent ad invicem: et primo quaerit de utentibus et fruentibus, an sint utibilia vel fruibilia; secundo de fruibilibus, scilicet de Deo, utrum sit utens nobis vel fruens, ibi: sed cum Deus diligat nos (...) quaerit Augustinus quomodo diligat, an ut utens, an ut fruens; tertio de quibusdam utibilibus, utrum sint fruibilia, ibi: hic considerandum est, utrum virtutibus sit utendum, an fruendum. Quaelibet harum partium dividitur in quaestionem et solutionem. Hic quaeruntur tria: primo, de uti et frui. Secundo, de utibilibus et fruibilibus. Tertio, de utentibus et fruentibus. Circa primum quaeruntur duo: 1 quid sit frui secundum rem; 2 quid sit uti secundum rem.
+.";
         let fname = PathBuf::from("/tmp/test.db");
         let mapping = Mapping::open(&fname).unwrap();
         // first test a composite value
