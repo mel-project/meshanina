@@ -20,6 +20,7 @@ log = "0.4.14"
 blake3 = "1.2.0"
 fastrand = "1.6.0"
 dashmap = "5.0.0"
+libc = "0.2.112"
 
 [dev-dependencies]
 criterion = "0.3"

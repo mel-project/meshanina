@@ -8,6 +8,7 @@ use std::{
 use dashmap::DashMap;
 use ethnum::U256;
 use fs2::FileExt;
+use libc::MADV_RANDOM;
 
 use crate::{
     record::{write_record, Record, MAX_RECORD_BODYLEN},
@@ -40,8 +41,15 @@ impl Mapping {
         handle.seek(SeekFrom::Start(1 << 38))?;
         handle.write(&[0])?;
         handle.seek(SeekFrom::Start(0))?;
+
         // Now it's safe to memmap the file, because it's EXCLUSIVELY locked to this process.
-        let memmap = unsafe { memmap::MmapMut::map_mut(&handle)? };
+        let mut memmap = unsafe { memmap::MmapMut::map_mut(&handle)? };
+
+        #[cfg(target_os = "linux")]
+        unsafe {
+            libc::madvise(&mut memmap[0] as *mut u8 as _, memmap.len(), MADV_RANDOM);
+        }
+
         Ok(Mapping {
             inner: Table::new(memmap),
             atomic_cache: DashMap::new(),
