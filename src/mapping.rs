@@ -218,15 +218,8 @@ unsafe fn extend_lifetime<'b, T: ?Sized>(r: &'b T) -> &'static T {
 
 /// A probe sequence.
 fn probe_sequence(key: U256) -> impl Iterator<Item = usize> {
-    (16..40)
-        .map(|p| (1u64 << p, 1u64 << (p + 1)))
-        .cycle()
-        .enumerate()
-        .map(move |(offset, (start, end))| {
-            log::trace!("sequence at offset {}", offset);
-            (start + ((key.as_u64() + offset as u64) % (end - start))) as usize
-        })
-        .take(10000)
+    let i = key.as_u64() as usize;
+    (0..).map(move |v| i + v)
 }
 // Atomic key
 fn atomic_key(key: U256) -> U256 {
