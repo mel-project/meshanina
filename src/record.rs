@@ -22,7 +22,7 @@ pub fn write_record(dest: &mut [u8], key: U256, length: usize, value: &[u8]) {
         header[4..][32..][..4].copy_from_slice(&(length as u32).to_le_bytes());
         header[4..][..32].copy_from_slice(&key.to_le_bytes());
     }
-    let chksum = CRC32.checksum(&dest[4..]);
+    let chksum = crc32fast::hash(&dest[4..]);
     dest[..4].copy_from_slice(&chksum.to_le_bytes());
 }
 
@@ -33,19 +33,24 @@ const CRC32: Crc<u32> = Crc::<u32>::new(&CRC_32_ISO_HDLC);
 
 impl<'a> Record<'a> {
     /// Gets the record checksum.
-    pub fn crc32(&self) -> u32 {
+    fn checksum(&self) -> u32 {
         u32::from_le_bytes(self.0[0..4].try_into().unwrap())
     }
 
     /// Compute the checksum
-    pub fn correct_crc32(&self) -> u32 {
+    fn legacy_crc32(&self) -> u32 {
         CRC32.checksum(&self.0[4..])
+    }
+
+    /// Compute the new checksum
+    fn new_crc32(&self) -> u32 {
+        crc32fast::hash(&self.0[4..])
     }
 
     /// Validates the checksum of the record.
     pub fn validate(self) -> Option<Self> {
-        let crc = self.correct_crc32();
-        if crc > 0 && self.crc32() == self.correct_crc32() {
+        let csum = self.checksum();
+        if csum > 0 && (csum == self.new_crc32() || csum == self.legacy_crc32()) {
             Some(self)
         } else {
             None

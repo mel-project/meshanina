@@ -3,7 +3,6 @@ use std::{
     fs::File,
     io::{Seek, SeekFrom, Write},
     path::Path,
-    sync::atomic::AtomicUsize,
 };
 
 use arrayref::{array_mut_ref, array_ref};
