@@ -1,3 +1,4 @@
+use arrayref::array_ref;
 use crc::{Crc, CRC_32_ISO_HDLC};
 use ethnum::U256;
 use zeroize::Zeroize;
@@ -34,7 +35,7 @@ const CRC32: Crc<u32> = Crc::<u32>::new(&CRC_32_ISO_HDLC);
 impl<'a> Record<'a> {
     /// Gets the record checksum.
     fn checksum(&self) -> u32 {
-        u32::from_le_bytes(self.0[0..4].try_into().unwrap())
+        u32::from_le_bytes(*array_ref![self.0, 0, 4])
     }
 
     /// Compute the checksum
@@ -59,12 +60,12 @@ impl<'a> Record<'a> {
 
     /// Gets the key of the record.
     pub fn key(&self) -> U256 {
-        U256::from_le_bytes(self.0[4..][..32].try_into().unwrap())
+        U256::from_le_bytes(*array_ref![self.0[4..], 0, 32])
     }
 
     /// Get the length of the record.
     pub fn length(&self) -> usize {
-        u32::from_le_bytes(self.0[4..][32..][..4].try_into().unwrap()) as usize
+        u32::from_le_bytes(*array_ref![self.0[4..][32..], 0, 4]) as usize
     }
 
     /// Get the value of the record.

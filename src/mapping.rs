@@ -1,6 +1,7 @@
 use std::{
     borrow::Cow,
     fs::File,
+    hash::BuildHasherDefault,
     io::{Seek, SeekFrom, Write},
     path::Path,
 };
@@ -12,6 +13,7 @@ use fs2::FileExt;
 use libc::MADV_RANDOM;
 use memmap::{MmapMut, MmapOptions};
 use parking_lot::RwLock;
+use rustc_hash::FxHasher;
 
 use crate::{
     record::{write_record, Record, MAX_RECORD_BODYLEN},
@@ -22,7 +24,7 @@ use crate::{
 pub struct Mapping {
     inner: Table,
     alloc_mmap: RwLock<MmapMut>,
-    atomic_cache: DashMap<u32, (U256, *const u8, usize, usize)>,
+    atomic_cache: DashMap<u32, (U256, *const u8, usize, usize), BuildHasherDefault<FxHasher>>,
     _file: File,
 }
 
@@ -66,7 +68,7 @@ impl Mapping {
 
         Ok(Mapping {
             inner: Table::new(table_mmap),
-            atomic_cache: DashMap::new(),
+            atomic_cache: Default::default(),
             alloc_mmap: RwLock::new(alloc_mmap),
             _file: handle,
         })
