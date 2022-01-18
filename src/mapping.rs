@@ -95,17 +95,17 @@ impl Mapping {
         }
     }
 
-    /// Gets the allocation pointer, returning a potentially free allocation point.
-    fn get_alloc_ptr(&self) -> usize {
-        let mm = self.alloc_mmap.read();
-        u64::from_le_bytes(*array_ref![mm, 0, 8]) as usize
-    }
+    // /// Gets the allocation pointer, returning a potentially free allocation point.
+    // fn get_alloc_ptr(&self) -> usize {
+    //     let mm = self.alloc_mmap.read();
+    //     u64::from_le_bytes(*array_ref![mm, 0, 8]) as usize
+    // }
 
-    /// Sets the allocation pointer, given something known to be free.
-    fn set_alloc_ptr(&self, ptr: usize) {
-        let mut mm = self.alloc_mmap.write();
-        mm[0..8].copy_from_slice(&(ptr as u64).to_le_bytes());
-    }
+    // /// Sets the allocation pointer, given something known to be free.
+    // fn set_alloc_ptr(&self, ptr: usize) {
+    //     let mut mm = self.alloc_mmap.write();
+    //     mm[0..8].copy_from_slice(&(ptr as u64).to_le_bytes());
+    // }
 
     /// Gets an atomic key-value pair.
     fn get_atomic<'a>(&'a self, key: U256) -> Option<(&'a [u8], usize)> {
@@ -169,8 +169,8 @@ impl Mapping {
 
     /// Inserts an atomic key-value pair.
     fn insert_atomic(&self, key: U256, value: &[u8], value_length: Option<usize>) -> Option<()> {
-        let ptr = self.get_alloc_ptr();
         let mut map = self.alloc_mmap.write();
+        let ptr = u64::from_le_bytes(*array_ref![map, 0, 8]) as usize;
         for posn in probe_sequence(key) {
             // dbg!(posn);
             let offset = (posn % (map.len() / 8)) * 8;
@@ -211,8 +211,8 @@ impl Mapping {
                         value,
                     );
                     *offset_ptr = ((ptr + offset) as u64).to_le_bytes();
-                    drop(map);
-                    self.set_alloc_ptr(ptr + offset + 1);
+                    let to_write = ptr + offset + 1;
+                    map[0..8].copy_from_slice(&(to_write as u64).to_le_bytes());
 
                     return Some(());
                 }
