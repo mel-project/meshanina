@@ -57,14 +57,14 @@ impl Mapping {
         // }
 
         let mut alloc_mmap = unsafe { MmapOptions::new().len(1 << 30).map_mut(&handle)? };
-        #[cfg(target_os = "linux")]
-        unsafe {
-            libc::madvise(
-                &mut alloc_mmap[0] as *mut u8 as _,
-                alloc_mmap.len(),
-                MADV_RANDOM,
-            );
-        }
+        // #[cfg(target_os = "linux")]
+        // unsafe {
+        //     libc::madvise(
+        //         &mut alloc_mmap[0] as *mut u8 as _,
+        //         alloc_mmap.len(),
+        //         MADV_RANDOM,
+        //     );
+        // }
 
         Ok(Mapping {
             inner: Table::new(table_mmap),
