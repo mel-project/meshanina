@@ -119,6 +119,11 @@ impl Mapping {
         log::trace!("MISS {}", key);
         let map = self.alloc_mmap.read();
         for posn in probe_sequence(key) {
+            // workaround for garbage bug
+            if posn == 0 {
+                continue;
+            }
+
             let offset = (posn % (map.len() / 8)) * 8;
             let offset = u64::from_le_bytes(*array_ref![map, offset, 8]) as usize;
             if offset == 0 {
@@ -167,6 +172,10 @@ impl Mapping {
         let ptr = self.get_alloc_ptr();
         let mut map = self.alloc_mmap.write();
         for posn in probe_sequence(key) {
+            if posn == 0 {
+                continue;
+            }
+
             // dbg!(posn);
             let offset = (posn % (map.len() / 8)) * 8;
             let offset_ptr = array_mut_ref![map, offset, 8];
