@@ -1,19 +1,18 @@
 use std::{
     borrow::Cow,
     fs::File,
-    hash::BuildHasherDefault,
     io::{Seek, SeekFrom, Write},
     path::Path,
+    sync::Arc,
 };
 
 use arrayref::{array_mut_ref, array_ref};
 use dashmap::DashMap;
 use ethnum::U256;
 use fs2::FileExt;
-use libc::MADV_RANDOM;
 use memmap::{MmapMut, MmapOptions};
+use once_cell::sync::Lazy;
 use parking_lot::RwLock;
-use rustc_hash::FxHasher;
 
 use crate::{
     record::{write_record, Record, MAX_RECORD_BODYLEN},
@@ -22,9 +21,7 @@ use crate::{
 
 /// Concurrent hashtable that represents the database.
 pub struct Mapping {
-    inner: Table,
-    alloc_mmap: RwLock<MmapMut>,
-    atomic_cache: DashMap<u32, (U256, *const u8, usize, usize), BuildHasherDefault<FxHasher>>,
+    inner: RwLock<MappingInner>,
     _file: File,
 }
 
@@ -42,29 +39,29 @@ impl Mapping {
         handle.try_lock_exclusive()?;
         // Create at least 274.9 GB of empty space.
         handle.seek(SeekFrom::Start(1 << 38))?;
-        handle.write(&[0])?;
+        handle.write_all(&[0])?;
         handle.seek(SeekFrom::Start(0))?;
 
         // Now it's safe to memmap the file, because it's EXCLUSIVELY locked to this process.
         let mut table_mmap = unsafe { MmapOptions::new().offset(1 << 30).map_mut(&handle)? };
-        #[cfg(target_os = "linux")]
-        unsafe {
-            libc::madvise(
-                &mut table_mmap[0] as *mut u8 as _,
-                table_mmap.len(),
-                MADV_RANDOM,
-            );
-        }
+        // #[cfg(target_os = "linux")]
+        // unsafe {
+        //     libc::madvise(
+        //         &mut table_mmap[0] as *mut u8 as _,
+        //         table_mmap.len(),
+        //         MADV_RANDOM,
+        //     );
+        // }
 
         let mut alloc_mmap = unsafe { MmapOptions::new().len(1 << 30).map_mut(&handle)? };
-        #[cfg(target_os = "linux")]
-        unsafe {
-            libc::madvise(
-                &mut alloc_mmap[0] as *mut u8 as _,
-                alloc_mmap.len(),
-                MADV_RANDOM,
-            );
-        }
+        // #[cfg(target_os = "linux")]
+        // unsafe {
+        //     libc::madvise(
+        //         &mut alloc_mmap[0] as *mut u8 as _,
+        //         alloc_mmap.len(),
+        //         MADV_RANDOM,
+        //     );
+        // }
         if std::env::var("MESHANINA_PRELOAD").is_ok() {
             let mut sum = 0u8;
             for (count, chunk) in alloc_mmap.chunks(1048576).enumerate() {
@@ -76,29 +73,36 @@ impl Mapping {
         }
 
         Ok(Mapping {
-            inner: Table::new(table_mmap),
-            atomic_cache: Default::default(),
-            alloc_mmap: RwLock::new(alloc_mmap),
+            inner: MappingInner {
+                table: Table::new(table_mmap),
+                alloc_mmap,
+                owned_cache: Default::default(),
+            }
+            .into(),
             _file: handle,
         })
     }
 
     /// Flushes the mapping to disk.
     pub fn flush(&self) {
-        self.inner.flush();
+        self.inner.read().table.flush();
     }
 
     /// Gets a key-value pair.
     pub fn get<'a>(&'a self, key: U256) -> Option<Cow<'a, [u8]>> {
         log::trace!("getting key {}", key);
-        let (top, top_length) = self.get_atomic(atomic_key(key))?;
+        let inner = self.inner.read();
+        let (top, top_length) = inner.get_atomic(atomic_key(key))?;
         if top_length <= MAX_RECORD_BODYLEN {
-            Some(Cow::Borrowed(top))
+            Some(match top {
+                Cow::Borrowed(s) => Cow::Borrowed(unsafe { extend_lifetime(s) }),
+                Cow::Owned(o) => Cow::Owned(o),
+            })
         } else {
             let mut toret = vec![0u8; top_length];
             for (i, chunk) in toret.chunks_mut(MAX_RECORD_BODYLEN).enumerate() {
-                let (db_chunk, _) = self.get_atomic(chunk_key(key, i))?;
-                chunk.copy_from_slice(db_chunk);
+                let (db_chunk, _) = inner.get_atomic(chunk_key(key, i))?;
+                chunk.copy_from_slice(&db_chunk);
             }
             Some(Cow::Owned(toret))
         }
@@ -116,84 +120,128 @@ impl Mapping {
     //     mm[0..8].copy_from_slice(&(ptr as u64).to_le_bytes());
     // }
 
-    /// Gets an atomic key-value pair.
-    fn get_atomic<'a>(&'a self, key: U256) -> Option<(&'a [u8], usize)> {
-        let cache_key = (key.as_u32() ^ 0xdeadbeef) & ((1 << 18) - 1);
-        if let Some((ckey, ptr, len, outlen)) = self.atomic_cache.get(&cache_key).map(|f| *f) {
-            if ckey == key {
-                log::trace!("HIT {}", key);
-                return Some((unsafe { std::slice::from_raw_parts(ptr, len) }, outlen));
+    /// Inserts a key-value pair. Violating a one-to-one correspondence between keys and values is a **logic error** that may corrupt the database (though it will not cause memory safety failures)
+    pub fn insert(&self, key: U256, value: &[u8]) {
+        log::trace!("inserting key {}, value of length {}", key, value.len());
+        let mut inner = self.inner.write();
+        if value.len() <= MAX_RECORD_BODYLEN {
+            inner
+                .insert_atomic(atomic_key(key), value, None)
+                .expect("database is full")
+        } else {
+            // insert the "top" key
+            inner.insert_atomic(atomic_key(key), &[], Some(value.len()));
+            // insert the chunks
+            for (i, chunk) in value.chunks(MAX_RECORD_BODYLEN).enumerate() {
+                inner.insert_atomic(chunk_key(key, i), chunk, None);
             }
         }
-        log::trace!("MISS {}", key);
-        let map = self.alloc_mmap.read();
+    }
+}
+
+static MESHANINA_CACHE: Lazy<bool> = Lazy::new(|| true);
+
+struct MappingInner {
+    table: Table,
+    alloc_mmap: MmapMut,
+    owned_cache: Arc<DashMap<u32, (U256, Vec<u8>, Option<usize>, bool)>>,
+}
+
+impl MappingInner {
+    /// Flush all.
+    fn flush(&mut self) {
+        if *MESHANINA_CACHE {
+            let owned_cache = self.owned_cache.clone();
+            for mut r in owned_cache.iter_mut() {
+                let (key, value, value_length, dirty) = r.value_mut();
+                if *dirty {
+                    self.really_insert_atomic(*key, value, *value_length);
+                    *dirty = false;
+                }
+            }
+        }
+        self.table.flush()
+    }
+
+    /// Gets an atomic key-value pair.
+    fn get_atomic<'a>(&'a self, key: U256) -> Option<(Cow<'a, [u8]>, usize)> {
+        if *MESHANINA_CACHE {
+            if let Some(res) = self.owned_cache.get(&cache_key(key)) {
+                if res.value().0 == key {
+                    let v = res.value().1.clone();
+                    let vlen = v.len();
+                    return Some((Cow::Owned(v), res.value().2.unwrap_or(vlen)));
+                }
+            }
+        }
         for posn in probe_sequence(key) {
-            let offset = (posn % (map.len() / 8)) * 8;
+            let offset = (posn % (self.alloc_mmap.len() / 8)) * 8;
             // workaround for garbage bug
             if offset == 0 {
                 continue;
             }
 
-            let offset = u64::from_le_bytes(*array_ref![map, offset, 8]) as usize;
+            let offset = u64::from_le_bytes(*array_ref![self.alloc_mmap, offset, 8]) as usize;
             if offset == 0 {
                 break;
             }
-            let potential_record = self.inner.get(offset)?;
-            let record = potential_record.read();
-            let record = Record(&record).validate()?;
+            let record = self.table.get(offset)?;
+            let record = Record(record).validate()?;
             if record.key() != key {
                 continue;
             }
-            self.atomic_cache.insert(
-                cache_key,
-                (
-                    key,
-                    (&record.value()[0]) as *const u8,
-                    record.value().len(),
-                    record.length(),
-                ),
-            );
             unsafe {
-                return Some((extend_lifetime(record.value()), record.length()));
+                return Some((
+                    Cow::Borrowed(extend_lifetime(record.value())),
+                    record.length(),
+                ));
             }
         }
         None
     }
 
-    /// Inserts a key-value pair. Violating a one-to-one correspondence between keys and values is a **logic error** that may corrupt the database (though it will not cause memory safety failures)
-    pub fn insert(&self, key: U256, value: &[u8]) {
-        log::trace!("inserting key {}, value of length {}", key, value.len());
-        if value.len() <= MAX_RECORD_BODYLEN {
-            self.insert_atomic(atomic_key(key), value, None)
-                .expect("database is full")
-        } else {
-            // insert the "top" key
-            self.insert_atomic(atomic_key(key), &[], Some(value.len()));
-            // insert the chunks
-            for (i, chunk) in value.chunks(MAX_RECORD_BODYLEN).enumerate() {
-                self.insert_atomic(chunk_key(key, i), chunk, None);
+    /// Inserts an atomic key-value pair.
+    fn insert_atomic(
+        &mut self,
+        key: U256,
+        value: &[u8],
+        value_length: Option<usize>,
+    ) -> Option<()> {
+        if *MESHANINA_CACHE {
+            let cache_key = cache_key(key);
+            if let Some(old) = self
+                .owned_cache
+                .insert(cache_key, (key, value.to_vec(), value_length, true))
+            {
+                self.really_insert_atomic(old.0, &old.1, old.2)
+            } else {
+                Some(())
             }
+        } else {
+            self.really_insert_atomic(key, value, value_length)
         }
     }
 
-    /// Inserts an atomic key-value pair.
-    fn insert_atomic(&self, key: U256, value: &[u8], value_length: Option<usize>) -> Option<()> {
-        let mut map = self.alloc_mmap.write();
-        let ptr = u64::from_le_bytes(*array_ref![map, 0, 8]) as usize;
+    fn really_insert_atomic(
+        &mut self,
+        key: U256,
+        value: &[u8],
+        value_length: Option<usize>,
+    ) -> Option<()> {
+        let ptr = u64::from_le_bytes(*array_ref![self.alloc_mmap, 0, 8]) as usize;
         for posn in probe_sequence(key) {
             // dbg!(posn);
-            let offset = (posn % (map.len() / 8)) * 8;
+            let offset = (posn % (self.alloc_mmap.len() / 8)) * 8;
             if offset == 0 {
                 continue;
             }
 
-            let offset_ptr = array_mut_ref![map, offset, 8];
+            let offset_ptr = array_mut_ref![self.alloc_mmap, offset, 8];
             let should_overwrite = if *offset_ptr == [0; 8] {
                 true
             } else {
                 let offset = u64::from_le_bytes(*offset_ptr) as usize;
-                let record = self.inner.get(offset).expect("wtf");
-                let record = record.read();
+                let record = self.table.get(offset).expect("wtf");
                 if let Some(record) = Record(&record).validate() {
                     if record.key() == key {
                         return Some(());
@@ -208,20 +256,19 @@ impl Mapping {
                     if ptr + offset == 0 {
                         continue;
                     }
-                    let slot = self.inner.get(ptr + offset)?;
-                    let mut slot = slot.write();
-                    if Record(&slot).validate().is_some() {
+                    let slot = self.table.get_mut(ptr + offset)?;
+                    if Record(slot).validate().is_some() {
                         continue;
                     }
                     write_record(
-                        &mut slot,
+                        slot,
                         key,
                         value_length.unwrap_or_else(|| value.len()),
                         value,
                     );
                     *offset_ptr = ((ptr + offset) as u64).to_le_bytes();
                     let to_write = ptr + offset + 1;
-                    map[0..8].copy_from_slice(&(to_write as u64).to_le_bytes());
+                    self.alloc_mmap[0..8].copy_from_slice(&(to_write as u64).to_le_bytes());
 
                     return Some(());
                 }
@@ -229,6 +276,10 @@ impl Mapping {
         }
         None
     }
+}
+
+fn cache_key(key: U256) -> u32 {
+    (key.as_u32() ^ 0xdeadbeef) % (100 * 1024)
 }
 
 unsafe fn extend_lifetime<'b, T: ?Sized>(r: &'b T) -> &'static T {
