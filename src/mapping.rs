@@ -76,7 +76,6 @@ impl Mapping {
             inner: MappingInner {
                 table: Table::new(table_mmap),
                 alloc_mmap,
-                owned_cache: Default::default(),
             }
             .into(),
             _file: handle,
@@ -85,7 +84,7 @@ impl Mapping {
 
     /// Flushes the mapping to disk.
     pub fn flush(&self) {
-        self.inner.read().table.flush();
+        self.inner.read().flush();
     }
 
     /// Gets a key-value pair.
@@ -139,41 +138,19 @@ impl Mapping {
     }
 }
 
-static MESHANINA_CACHE: Lazy<bool> = Lazy::new(|| true);
-
 struct MappingInner {
     table: Table,
     alloc_mmap: MmapMut,
-    owned_cache: Arc<DashMap<u32, (U256, Vec<u8>, Option<usize>, bool)>>,
 }
 
 impl MappingInner {
     /// Flush all.
-    fn flush(&mut self) {
-        if *MESHANINA_CACHE {
-            let owned_cache = self.owned_cache.clone();
-            for mut r in owned_cache.iter_mut() {
-                let (key, value, value_length, dirty) = r.value_mut();
-                if *dirty {
-                    self.really_insert_atomic(*key, value, *value_length);
-                    *dirty = false;
-                }
-            }
-        }
+    fn flush(&self) {
         self.table.flush()
     }
 
     /// Gets an atomic key-value pair.
     fn get_atomic<'a>(&'a self, key: U256) -> Option<(Cow<'a, [u8]>, usize)> {
-        if *MESHANINA_CACHE {
-            if let Some(res) = self.owned_cache.get(&cache_key(key)) {
-                if res.value().0 == key {
-                    let v = res.value().1.clone();
-                    let vlen = v.len();
-                    return Some((Cow::Owned(v), res.value().2.unwrap_or(vlen)));
-                }
-            }
-        }
         for posn in probe_sequence(key) {
             let offset = (posn % (self.alloc_mmap.len() / 8)) * 8;
             // workaround for garbage bug
@@ -207,19 +184,7 @@ impl MappingInner {
         value: &[u8],
         value_length: Option<usize>,
     ) -> Option<()> {
-        if *MESHANINA_CACHE {
-            let cache_key = cache_key(key);
-            if let Some(old) = self
-                .owned_cache
-                .insert(cache_key, (key, value.to_vec(), value_length, true))
-            {
-                self.really_insert_atomic(old.0, &old.1, old.2)
-            } else {
-                Some(())
-            }
-        } else {
-            self.really_insert_atomic(key, value, value_length)
-        }
+        self.really_insert_atomic(key, value, value_length)
     }
 
     fn really_insert_atomic(
