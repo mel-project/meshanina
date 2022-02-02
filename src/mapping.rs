@@ -3,15 +3,13 @@ use std::{
     fs::File,
     io::{Seek, SeekFrom, Write},
     path::Path,
-    sync::Arc,
 };
 
 use arrayref::{array_mut_ref, array_ref};
-use dashmap::DashMap;
 use ethnum::U256;
 use fs2::FileExt;
+use libc::MADV_RANDOM;
 use memmap::{MmapMut, MmapOptions};
-use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 
 use crate::{
@@ -44,24 +42,24 @@ impl Mapping {
 
         // Now it's safe to memmap the file, because it's EXCLUSIVELY locked to this process.
         let mut table_mmap = unsafe { MmapOptions::new().offset(1 << 30).map_mut(&handle)? };
-        // #[cfg(target_os = "linux")]
-        // unsafe {
-        //     libc::madvise(
-        //         &mut table_mmap[0] as *mut u8 as _,
-        //         table_mmap.len(),
-        //         MADV_RANDOM,
-        //     );
-        // }
+        #[cfg(target_os = "linux")]
+        unsafe {
+            libc::madvise(
+                &mut table_mmap[0] as *mut u8 as _,
+                table_mmap.len(),
+                MADV_RANDOM,
+            );
+        }
 
         let mut alloc_mmap = unsafe { MmapOptions::new().len(1 << 30).map_mut(&handle)? };
-        // #[cfg(target_os = "linux")]
-        // unsafe {
-        //     libc::madvise(
-        //         &mut alloc_mmap[0] as *mut u8 as _,
-        //         alloc_mmap.len(),
-        //         MADV_RANDOM,
-        //     );
-        // }
+        #[cfg(target_os = "linux")]
+        unsafe {
+            libc::madvise(
+                &mut alloc_mmap[0] as *mut u8 as _,
+                alloc_mmap.len(),
+                MADV_RANDOM,
+            );
+        }
         if std::env::var("MESHANINA_PRELOAD").is_ok() {
             let mut sum = 0u8;
             for (count, chunk) in alloc_mmap.chunks(1048576).enumerate() {

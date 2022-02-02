@@ -8,7 +8,7 @@ pub struct Table {
 
 impl Table {
     /// Creates a table, given a memmapped file.
-    pub fn new(mut file: memmap::MmapMut) -> Self {
+    pub fn new(file: memmap::MmapMut) -> Self {
         Self { file }
     }
 
