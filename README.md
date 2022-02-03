@@ -9,6 +9,8 @@ Meshanina is designed for use as a _content-addressed_ datastore, where keys are
 
 ## Database layout
 
+**NOTE: THIS IS WRONG AND OUTDATED. Will fix soon.**
+
 A Meshanina database maps 256-bit integers to arbitrary byteslices. At its heart, it is simply an open-addressed hashtable mapping 256-bit keys to "records".
 
 Database files are fixed-size. When they fill up, a new one twice as big is created and all records are moved across.
