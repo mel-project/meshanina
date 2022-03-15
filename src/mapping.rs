@@ -42,14 +42,6 @@ impl Mapping {
 
         // Now it's safe to memmap the file, because it's EXCLUSIVELY locked to this process.
         let mut table_mmap = unsafe { MmapOptions::new().offset(1 << 30).map_mut(&handle)? };
-        #[cfg(target_os = "linux")]
-        unsafe {
-            libc::madvise(
-                &mut table_mmap[0] as *mut u8 as _,
-                table_mmap.len(),
-                MADV_RANDOM,
-            );
-        }
 
         let mut alloc_mmap = unsafe { MmapOptions::new().len(1 << 30).map_mut(&handle)? };
         #[cfg(target_os = "linux")]
