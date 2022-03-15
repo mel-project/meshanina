@@ -8,7 +8,7 @@ use std::{
 use arrayref::{array_mut_ref, array_ref};
 use ethnum::U256;
 use fs2::FileExt;
-use libc::MADV_RANDOM;
+
 use memmap::{MmapMut, MmapOptions};
 use parking_lot::RwLock;
 
@@ -46,6 +46,7 @@ impl Mapping {
         let mut alloc_mmap = unsafe { MmapOptions::new().len(1 << 30).map_mut(&handle)? };
         #[cfg(target_os = "linux")]
         unsafe {
+            use libc::MADV_RANDOM;
             libc::madvise(
                 &mut alloc_mmap[0] as *mut u8 as _,
                 alloc_mmap.len(),
