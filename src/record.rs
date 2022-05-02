@@ -1,7 +1,6 @@
 use arrayref::array_ref;
 use crc::{Crc, CRC_32_ISO_HDLC};
 use ethnum::U256;
-use zeroize::Zeroize;
 
 /// Max size of a record body
 pub const MAX_RECORD_BODYLEN: usize = 728;
@@ -10,10 +9,9 @@ pub const MAX_RECORD_BODYLEN: usize = 728;
 pub const RECORD_SIZE: usize = 768;
 
 /// Write a record to a particular byte slice.
-pub fn write_record(dest: &mut [u8], key: U256, length: usize, value: &[u8]) {
-    assert!(dest.len() == RECORD_SIZE);
+pub fn new_record(key: U256, length: usize, value: &[u8]) -> [u8; RECORD_SIZE] {
     assert!(value.len() <= length);
-    dest.zeroize();
+    let mut dest = [0u8; RECORD_SIZE];
     // write everything except the checksum
     {
         let (header, body) = dest.split_at_mut(4 + 32 + 4);
@@ -25,6 +23,7 @@ pub fn write_record(dest: &mut [u8], key: U256, length: usize, value: &[u8]) {
     }
     let chksum = crc32fast::hash(&dest[4..]);
     dest[..4].copy_from_slice(&chksum.to_le_bytes());
+    dest
 }
 
 /// A single on-disk, memory-mapped record.

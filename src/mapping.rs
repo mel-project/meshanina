@@ -3,17 +3,17 @@ use std::{
     fs::File,
     io::{Seek, SeekFrom, Write},
     path::Path,
+    time::Instant,
 };
 
 use arrayref::{array_mut_ref, array_ref};
 use ethnum::U256;
 use fs2::FileExt;
-
 use memmap::{MmapMut, MmapOptions};
 use parking_lot::RwLock;
 
 use crate::{
-    record::{write_record, Record, MAX_RECORD_BODYLEN},
+    record::{new_record, Record, MAX_RECORD_BODYLEN},
     table::Table,
 };
 
@@ -40,18 +40,6 @@ impl Mapping {
         handle.write_all(&[0])?;
         handle.seek(SeekFrom::Start(0))?;
 
-        // Now it's safe to memmap the file, because it's EXCLUSIVELY locked to this process.
-        let mut table_mmap = unsafe { MmapOptions::new().offset(1 << 30).map_mut(&handle)? };
-        #[cfg(target_os = "linux")]
-        unsafe {
-            use libc::MADV_RANDOM;
-            libc::madvise(
-                &mut table_mmap[0] as *mut u8 as _,
-                table_mmap.len(),
-                MADV_RANDOM,
-            );
-        }
-
         let mut alloc_mmap = unsafe { MmapOptions::new().len(1 << 30).map_mut(&handle)? };
         #[cfg(target_os = "linux")]
         unsafe {
@@ -65,16 +53,17 @@ impl Mapping {
         if std::env::var("MESHANINA_PRELOAD").is_ok() {
             let mut sum = 0u8;
             for (count, chunk) in alloc_mmap.chunks(1048576).enumerate() {
-                log::warn!("MESHANINA_PRELOAD {}/{}", count, alloc_mmap.len() / 1048576);
+                eprintln!("MESHANINA_PRELOAD {}/{}", count, alloc_mmap.len() / 1048576);
                 for i in chunk {
                     sum = sum.wrapping_add(*i)
                 }
             }
+            log::warn!("sum {}", sum);
         }
 
         Ok(Mapping {
             inner: MappingInner {
-                table: Table::new(table_mmap),
+                table: Table::new(handle.try_clone().unwrap(), 1 << 30),
                 alloc_mmap,
             }
             .into(),
@@ -126,7 +115,7 @@ impl Mapping {
         if value.len() <= MAX_RECORD_BODYLEN {
             inner
                 .insert_atomic(atomic_key(key), value, None)
-                .expect("database is full")
+                .expect("database is full");
         } else {
             // insert the "top" key
             inner.insert_atomic(atomic_key(key), &[], Some(value.len()));
@@ -151,6 +140,7 @@ impl MappingInner {
 
     /// Gets an atomic key-value pair.
     fn get_atomic<'a>(&'a self, key: U256) -> Option<(Cow<'a, [u8]>, usize)> {
+        let start = Instant::now();
         for posn in probe_sequence(key) {
             let offset = (posn % (self.alloc_mmap.len() / 8)) * 8;
             // workaround for garbage bug
@@ -163,15 +153,24 @@ impl MappingInner {
                 break;
             }
             let record = self.table.get(offset)?;
-            let record = Record(record).validate()?;
+            let is_borrowed = matches!(record, Cow::Borrowed(_));
+            let record = Record(&record).validate()?;
             if record.key() != key {
                 continue;
             }
-            unsafe {
-                return Some((
-                    Cow::Borrowed(extend_lifetime(record.value())),
-                    record.length(),
-                ));
+            let elapsed = start.elapsed();
+            if elapsed.as_millis() > 1 {
+                log::debug!("get took {:?}", elapsed)
+            }
+            if is_borrowed {
+                unsafe {
+                    return Some((
+                        Cow::Borrowed(extend_lifetime(record.value())),
+                        record.length(),
+                    ));
+                }
+            } else {
+                return Some((Cow::Owned(record.value().to_vec()), record.length()));
             }
         }
         None
@@ -184,6 +183,10 @@ impl MappingInner {
         value: &[u8],
         value_length: Option<usize>,
     ) -> Option<()> {
+        // if self.get_atomic(key).is_some() {
+        //     eprintln!("already existent key {}", key);
+        //     // return Some(());
+        // }
         self.really_insert_atomic(key, value, value_length)
     }
 
@@ -193,8 +196,12 @@ impl MappingInner {
         value: &[u8],
         value_length: Option<usize>,
     ) -> Option<()> {
+        let start = Instant::now();
+        // let start = Instant::now();
+        // scopeguard::defer!(eprintln!("atomic insert took {:?}", start.elapsed()));
         let ptr = u64::from_le_bytes(*array_ref![self.alloc_mmap, 0, 8]) as usize;
-        for posn in probe_sequence(key) {
+        let pre_loop = start.elapsed();
+        for (i, posn) in probe_sequence(key).enumerate() {
             // dbg!(posn);
             let offset = (posn % (self.alloc_mmap.len() / 8)) * 8;
             if offset == 0 {
@@ -202,39 +209,42 @@ impl MappingInner {
             }
 
             let offset_ptr = array_mut_ref![self.alloc_mmap, offset, 8];
-            let should_overwrite = if *offset_ptr == [0; 8] {
-                true
-            } else {
-                let offset = u64::from_le_bytes(*offset_ptr) as usize;
-                let record = self.table.get(offset).expect("wtf");
-                if let Some(record) = Record(&record).validate() {
-                    if record.key() == key {
-                        return Some(());
-                    }
-                    false
-                } else {
-                    true
-                }
-            };
+            // let should_overwrite = if *offset_ptr == [0; 8] {
+            //     true
+            // } else {
+            //     let offset = u64::from_le_bytes(*offset_ptr) as usize;
+            //     dbg!(offset);
+            //     let record = self.table.get(offset).expect("wtf");
+            //     if let Some(record) = Record(&record).validate() {
+            //         // eprintln!("validating existing record ({}, {})", i, offset);
+            //         if record.key() == key {
+            //             // eprintln!("okay let's just stop now ({})", key);
+            //             return Some(());
+            //         }
+            //         false
+            //     } else {
+            //         true
+            //     }
+            // };
+            let should_overwrite = *offset_ptr == [0; 8];
+            let pre_overwrite = start.elapsed();
             if should_overwrite {
                 for offset in 0.. {
                     if ptr + offset == 0 {
                         continue;
                     }
-                    let slot = self.table.get_mut(ptr + offset)?;
-                    if Record(slot).validate().is_some() {
-                        continue;
-                    }
-                    write_record(
-                        slot,
-                        key,
-                        value_length.unwrap_or_else(|| value.len()),
-                        value,
-                    );
+                    let rec = new_record(key, value_length.unwrap_or(value.len()), value);
+                    self.table.insert(ptr + offset, &rec);
                     *offset_ptr = ((ptr + offset) as u64).to_le_bytes();
                     let to_write = ptr + offset + 1;
                     self.alloc_mmap[0..8].copy_from_slice(&(to_write as u64).to_le_bytes());
-
+                    let elapsed = start.elapsed();
+                    if elapsed.as_millis() > 1 {
+                        log::debug!(
+                            "insert took {:?} (pre_loop {:?}, pre_overwrite {:?}, i = {}, offset = {})",
+                            elapsed, pre_loop, pre_overwrite, i, offset
+                        )
+                    }
                     return Some(());
                 }
             }
