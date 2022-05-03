@@ -21,16 +21,16 @@ pub struct Table {
 impl Table {
     /// Creates a table, given a memmapped file.
     pub fn new(handle: File, offset: u64) -> Self {
-        let mut table_mmap = unsafe { MmapOptions::new().offset(offset).map_mut(&handle).unwrap() };
-        #[cfg(target_os = "linux")]
-        unsafe {
-            use libc::MADV_RANDOM;
-            libc::madvise(
-                &mut table_mmap[0] as *mut u8 as _,
-                table_mmap.len(),
-                MADV_RANDOM,
-            );
-        }
+        let table_mmap = unsafe { MmapOptions::new().offset(offset).map_mut(&handle).unwrap() };
+        // #[cfg(target_os = "linux")]
+        // unsafe {
+        //     use libc::MADV_RANDOM;
+        //     libc::madvise(
+        //         &mut table_mmap[0] as *mut u8 as _,
+        //         table_mmap.len(),
+        //         MADV_RANDOM,
+        //     );
+        // }
         Self {
             handle,
             file: table_mmap,

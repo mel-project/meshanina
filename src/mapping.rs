@@ -41,15 +41,15 @@ impl Mapping {
         handle.seek(SeekFrom::Start(0))?;
 
         let mut alloc_mmap = unsafe { MmapOptions::new().len(1 << 30).map_mut(&handle)? };
-        #[cfg(target_os = "linux")]
-        unsafe {
-            use libc::MADV_RANDOM;
-            libc::madvise(
-                &mut alloc_mmap[0] as *mut u8 as _,
-                alloc_mmap.len(),
-                MADV_RANDOM,
-            );
-        }
+        // #[cfg(target_os = "linux")]
+        // unsafe {
+        //     use libc::MADV_RANDOM;
+        //     libc::madvise(
+        //         &mut alloc_mmap[0] as *mut u8 as _,
+        //         alloc_mmap.len(),
+        //         MADV_RANDOM,
+        //     );
+        // }
         if std::env::var("MESHANINA_PRELOAD").is_ok() {
             let mut sum = 0u8;
             for (count, chunk) in alloc_mmap.chunks(1048576).enumerate() {
@@ -135,6 +135,7 @@ struct MappingInner {
 impl MappingInner {
     /// Flush all.
     fn flush(&self) {
+        self.alloc_mmap.flush().unwrap();
         self.table.flush()
     }
 
@@ -203,30 +204,31 @@ impl MappingInner {
         let pre_loop = start.elapsed();
         for (i, posn) in probe_sequence(key).enumerate() {
             // dbg!(posn);
+            if i > 0 {
+                dbg!(i);
+            }
             let offset = (posn % (self.alloc_mmap.len() / 8)) * 8;
             if offset == 0 {
                 continue;
             }
 
             let offset_ptr = array_mut_ref![self.alloc_mmap, offset, 8];
-            // let should_overwrite = if *offset_ptr == [0; 8] {
-            //     true
-            // } else {
-            //     let offset = u64::from_le_bytes(*offset_ptr) as usize;
-            //     dbg!(offset);
-            //     let record = self.table.get(offset).expect("wtf");
-            //     if let Some(record) = Record(&record).validate() {
-            //         // eprintln!("validating existing record ({}, {})", i, offset);
-            //         if record.key() == key {
-            //             // eprintln!("okay let's just stop now ({})", key);
-            //             return Some(());
-            //         }
-            //         false
-            //     } else {
-            //         true
-            //     }
-            // };
-            let should_overwrite = *offset_ptr == [0; 8];
+            let should_overwrite = if *offset_ptr == [0; 8] {
+                true
+            } else {
+                let offset = u64::from_le_bytes(*offset_ptr) as usize;
+                let record = self.table.get(offset).expect("wtf");
+                if let Some(record) = Record(&record).validate() {
+                    // eprintln!("validating existing record ({}, {})", i, offset);
+                    if record.key() == key {
+                        // eprintln!("okay let's just stop now ({})", key);
+                        return Some(());
+                    }
+                    false
+                } else {
+                    true
+                }
+            };
             let pre_overwrite = start.elapsed();
             if should_overwrite {
                 for offset in 0.. {
@@ -239,22 +241,22 @@ impl MappingInner {
                     let to_write = ptr + offset + 1;
                     self.alloc_mmap[0..8].copy_from_slice(&(to_write as u64).to_le_bytes());
                     let elapsed = start.elapsed();
-                    if elapsed.as_millis() > 1 {
-                        log::debug!(
-                            "insert took {:?} (pre_loop {:?}, pre_overwrite {:?}, i = {}, offset = {})",
-                            elapsed, pre_loop, pre_overwrite, i, offset
-                        )
-                    }
+                    // if elapsed.as_millis() > 1 {
+                    log::debug!(
+                        "insert took {:?} (pre_loop {:?}, pre_overwrite {:?}, i = {}, offset = {})",
+                        elapsed,
+                        pre_loop,
+                        pre_overwrite,
+                        i,
+                        offset
+                    );
+                    // }
                     return Some(());
                 }
             }
         }
         None
     }
-}
-
-fn cache_key(key: U256) -> u32 {
-    (key.as_u32() ^ 0xdeadbeef) % (100 * 1024)
 }
 
 unsafe fn extend_lifetime<'b, T: ?Sized>(r: &'b T) -> &'static T {
