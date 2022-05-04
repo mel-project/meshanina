@@ -41,15 +41,15 @@ impl Mapping {
         handle.seek(SeekFrom::Start(0))?;
 
         let mut alloc_mmap = unsafe { MmapOptions::new().len(1 << 30).map_mut(&handle)? };
-        // #[cfg(target_os = "linux")]
-        // unsafe {
-        //     use libc::MADV_RANDOM;
-        //     libc::madvise(
-        //         &mut alloc_mmap[0] as *mut u8 as _,
-        //         alloc_mmap.len(),
-        //         MADV_RANDOM,
-        //     );
-        // }
+        #[cfg(target_os = "linux")]
+        unsafe {
+            use libc::MADV_RANDOM;
+            libc::madvise(
+                &mut alloc_mmap[0] as *mut u8 as _,
+                alloc_mmap.len(),
+                MADV_RANDOM,
+            );
+        }
         if std::env::var("MESHANINA_PRELOAD").is_ok() {
             let mut sum = 0u8;
             for (count, chunk) in alloc_mmap.chunks(1048576).enumerate() {
@@ -203,10 +203,6 @@ impl MappingInner {
         let ptr = u64::from_le_bytes(*array_ref![self.alloc_mmap, 0, 8]) as usize;
         let pre_loop = start.elapsed();
         for (i, posn) in probe_sequence(key).enumerate() {
-            // dbg!(posn);
-            if i > 0 {
-                dbg!(i);
-            }
             let offset = (posn % (self.alloc_mmap.len() / 8)) * 8;
             if offset == 0 {
                 continue;
