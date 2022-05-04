@@ -21,7 +21,7 @@ pub struct Table {
 impl Table {
     /// Creates a table, given a memmapped file.
     pub fn new(handle: File, offset: u64) -> Self {
-        let table_mmap = unsafe { MmapOptions::new().offset(offset).map_mut(&handle).unwrap() };
+        let mut table_mmap = unsafe { MmapOptions::new().offset(offset).map_mut(&handle).unwrap() };
         #[cfg(target_os = "linux")]
         unsafe {
             use libc::MADV_RANDOM;
