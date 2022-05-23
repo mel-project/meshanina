@@ -41,15 +41,15 @@ impl Mapping {
         handle.seek(SeekFrom::Start(0))?;
 
         let mut alloc_mmap = unsafe { MmapOptions::new().len(1 << 30).map_mut(&handle)? };
-        #[cfg(target_os = "linux")]
-        unsafe {
-            use libc::MADV_RANDOM;
-            libc::madvise(
-                &mut alloc_mmap[0] as *mut u8 as _,
-                alloc_mmap.len(),
-                MADV_RANDOM,
-            );
-        }
+        // #[cfg(target_os = "linux")]
+        // unsafe {
+        //     use libc::MADV_RANDOM;
+        //     libc::madvise(
+        //         &mut alloc_mmap[0] as *mut u8 as _,
+        //         alloc_mmap.len(),
+        //         MADV_RANDOM,
+        //     );
+        // }
         if std::env::var("MESHANINA_PRELOAD").is_ok() {
             let mut sum = 0u8;
             for (count, chunk) in alloc_mmap.chunks(1048576).enumerate() {
