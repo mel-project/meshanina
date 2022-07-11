@@ -1,10 +1,4 @@
-use std::{
-    borrow::Cow,
-    fs::File,
-    io::{Seek, SeekFrom, Write},
-    path::Path,
-    time::Instant,
-};
+use std::{borrow::Cow, fs::File, path::Path, time::Instant};
 
 use arrayref::{array_mut_ref, array_ref};
 use ethnum::U256;
@@ -29,27 +23,35 @@ unsafe impl Send for Mapping {}
 impl Mapping {
     /// Opens a mapping, given a filename.
     pub fn open(fname: &Path) -> std::io::Result<Self> {
-        let mut handle = std::fs::OpenOptions::new()
+        let handle = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .open(fname)?;
         handle.try_lock_exclusive()?;
-        // Create at least 274.9 GB of empty space.
-        handle.seek(SeekFrom::Start(1 << 38))?;
-        handle.write_all(&[0])?;
-        handle.seek(SeekFrom::Start(0))?;
+
+        // allocate some space for the first gigabyte or so of metadata to prevent crazy fragmentation
+        #[cfg(unix)]
+        unsafe {
+            use std::os::unix::prelude::AsRawFd;
+            libc::posix_fallocate(handle.as_raw_fd(), 0, 1 << 30);
+        }
+
+        // // Create at least 274.9 GB of empty space.
+        // handle.seek(SeekFrom::Start(1 << 38))?;
+        // handle.write_all(&[0])?;
+        // handle.seek(SeekFrom::Start(0))?;
 
         let mut alloc_mmap = unsafe { MmapOptions::new().len(1 << 30).map_mut(&handle)? };
-        // #[cfg(target_os = "linux")]
-        // unsafe {
-        //     use libc::MADV_RANDOM;
-        //     libc::madvise(
-        //         &mut alloc_mmap[0] as *mut u8 as _,
-        //         alloc_mmap.len(),
-        //         MADV_RANDOM,
-        //     );
-        // }
+        #[cfg(target_os = "linux")]
+        unsafe {
+            use libc::MADV_RANDOM;
+            libc::madvise(
+                &mut alloc_mmap[0] as *mut u8 as _,
+                alloc_mmap.len(),
+                MADV_RANDOM,
+            );
+        }
         if std::env::var("MESHANINA_PRELOAD").is_ok() {
             let mut sum = 0u8;
             for (count, chunk) in alloc_mmap.chunks(1048576).enumerate() {
@@ -135,8 +137,10 @@ struct MappingInner {
 impl MappingInner {
     /// Flush all.
     fn flush(&self) {
+        self.table.flush();
+        let start = Instant::now();
         self.alloc_mmap.flush().unwrap();
-        self.table.flush()
+        log::debug!("metadata sync took {:?}", start.elapsed());
     }
 
     /// Gets an atomic key-value pair.
@@ -159,10 +163,7 @@ impl MappingInner {
             if record.key() != key {
                 continue;
             }
-            let elapsed = start.elapsed();
-            if elapsed.as_millis() > 1 {
-                log::debug!("get took {:?}", elapsed)
-            }
+
             if is_borrowed {
                 unsafe {
                     return Some((
@@ -238,7 +239,7 @@ impl MappingInner {
                     self.alloc_mmap[0..8].copy_from_slice(&(to_write as u64).to_le_bytes());
                     let elapsed = start.elapsed();
                     // if elapsed.as_millis() > 1 {
-                    log::debug!(
+                    log::trace!(
                         "insert took {:?} (pre_loop {:?}, pre_overwrite {:?}, i = {}, offset = {})",
                         elapsed,
                         pre_loop,
