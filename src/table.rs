@@ -6,7 +6,7 @@ use std::{
 };
 
 use flume::Sender;
-use memmap::MmapOptions;
+use memmap::{MmapMut, MmapOptions};
 
 use crate::record::RECORD_SIZE;
 
@@ -14,11 +14,10 @@ use crate::record::RECORD_SIZE;
 pub struct Table {
     /// handle
     handle: File,
+    /// Mmap
+    table_mmap: MmapMut,
     /// Offset
     offset: u64,
-
-    /// Sender for read request scheduling
-    send_req: Sender<(usize, oneshot::Sender<&'static [u8]>)>,
 }
 
 impl Table {
@@ -41,48 +40,46 @@ impl Table {
             );
         }
 
-        let (send_req, recv_req) = flume::unbounded::<(usize, oneshot::Sender<&'static [u8]>)>();
-        // make a thread that sorts stuff
-        std::thread::Builder::new()
-            .name("mesh-sched".into())
-            .spawn::<_, Option<()>>(move || {
-                let mut queue = vec![];
-                loop {
-                    let first = recv_req.recv().ok()?;
-                    queue.push(first);
-                    while let Ok(n) = recv_req.try_recv() {
-                        queue.push(n);
-                    }
-                    queue.sort_unstable_by_key(|d| d.0);
-                    // if queue.len() > 1 {
-                    //     log::debug!("batch of length {}: {:?}", queue.len(), queue);
-                    // }
-                    for (recno, _) in queue.iter() {
-                        let r = &table_mmap[recno * RECORD_SIZE..][..RECORD_SIZE];
-                        let start = Instant::now();
-                        let sum = r.iter().fold(0, |a, b| a ^ b);
-                        log::trace!("xor {} took {:?}", sum, start.elapsed());
-                    }
-                    for (recno, send_resp) in queue.drain(..) {
-                        let r = &table_mmap[recno * RECORD_SIZE..][..RECORD_SIZE];
-                        let _ = send_resp.send(unsafe { std::mem::transmute(r) });
-                    }
-                }
-            })
-            .unwrap();
+        // let (send_req, recv_req) = flume::unbounded::<(usize, oneshot::Sender<&'static [u8]>)>();
+        // // make a thread that sorts stuff
+        // std::thread::Builder::new()
+        //     .name("mesh-sched".into())
+        //     .spawn::<_, Option<()>>(move || {
+        //         let mut queue = vec![];
+        //         loop {
+        //             let first = recv_req.recv().ok()?;
+        //             queue.push(first);
+        //             while let Ok(n) = recv_req.try_recv() {
+        //                 queue.push(n);
+        //             }
+        //             queue.sort_unstable_by_key(|d| d.0);
+        //             // if queue.len() > 1 {
+        //             //     log::debug!("batch of length {}: {:?}", queue.len(), queue);
+        //             // }
+        //             for (recno, _) in queue.iter() {
+        //                 let r = &table_mmap[recno * RECORD_SIZE..][..RECORD_SIZE];
+        //                 let start = Instant::now();
+        //                 let sum = r.iter().fold(0, |a, b| a ^ b);
+        //                 log::trace!("xor {} took {:?}", sum, start.elapsed());
+        //             }
+        //             for (recno, send_resp) in queue.drain(..) {
+        //                 let r = &table_mmap[recno * RECORD_SIZE..][..RECORD_SIZE];
+        //                 let _ = send_resp.send(unsafe { std::mem::transmute(r) });
+        //             }
+        //         }
+        //     })
+        //     .unwrap();
 
         Self {
             handle,
+            table_mmap,
             offset,
-            send_req,
         }
     }
 
     /// Gets the given record out of the table
     pub fn get(&self, recno: usize) -> Option<Cow<[u8]>> {
-        let (s, r) = oneshot::channel();
-        self.send_req.send((recno, s)).unwrap();
-        let r = r.recv().unwrap();
+        let r = &self.table_mmap[recno * RECORD_SIZE..][..RECORD_SIZE];
         Some(Cow::Borrowed(r))
     }
 
