@@ -6,7 +6,7 @@ use fs2::FileExt;
 use memmap::{MmapMut, MmapOptions};
 use parking_lot::RwLock;
 
-use crate::{
+use crate::legacy::{
     record::{new_record, Record, MAX_RECORD_BODYLEN},
     table::Table,
 };
@@ -145,7 +145,7 @@ impl MappingInner {
 
     /// Gets an atomic key-value pair.
     fn get_atomic<'a>(&'a self, key: U256) -> Option<(Cow<'a, [u8]>, usize)> {
-        let start = Instant::now();
+        let _start = Instant::now();
         for posn in probe_sequence(key) {
             let offset = (posn % (self.alloc_mmap.len() / 8)) * 8;
             // workaround for garbage bug

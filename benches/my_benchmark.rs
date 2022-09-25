@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use meshanina::Mapping;
+use meshanina::legacy::Mapping;
 use once_cell::sync::Lazy;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 

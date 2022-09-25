@@ -1,80 +1,83 @@
+use std::{borrow::Cow, sync::Arc};
+
 use arrayref::array_ref;
-use crc::{Crc, CRC_32_ISO_HDLC};
-use ethnum::U256;
 
-/// Max size of a record body
-pub const MAX_RECORD_BODYLEN: usize = 728;
-
-/// Record size
-pub const RECORD_SIZE: usize = 768;
-
-/// Write a record to a particular byte slice.
-pub fn new_record(key: U256, length: usize, value: &[u8]) -> [u8; RECORD_SIZE] {
-    assert!(value.len() <= length);
-    let mut dest = [0u8; RECORD_SIZE];
-    // write everything except the checksum
-    {
-        let (header, body) = dest.split_at_mut(4 + 32 + 4);
-        // write the body first
-        body[..value.len()].copy_from_slice(value);
-        // then write the header
-        header[4..][32..][..4].copy_from_slice(&(length as u32).to_le_bytes());
-        header[4..][..32].copy_from_slice(&key.to_le_bytes());
-    }
-    let chksum = crc32fast::hash(&dest[4..]);
-    dest[..4].copy_from_slice(&chksum.to_le_bytes());
-    dest
+/// An on-disk --- or in-memory --- database record.
+#[derive(Debug, Clone)]
+pub enum Record<'a> {
+    /// A data record
+    Data([u8; 32], Cow<'a, [u8]>),
+    /// A HAMT node
+    HamtNode(bool, u64, Vec<RecordPtr<'a>>),
 }
 
-/// A single on-disk, memory-mapped record.
-pub struct Record<'a>(pub &'a [u8]);
+const RECORD_KIND_DATA: u32 = 0x00;
+const RECORD_KIND_HAMI: u32 = 0x01;
+const RECORD_KIND_HAMR: u32 = 0x02;
 
-const CRC32: Crc<u32> = Crc::<u32>::new(&CRC_32_ISO_HDLC);
+const RECORD_HEADER_SIZE: usize = 16;
 
 impl<'a> Record<'a> {
-    /// Gets the record checksum.
-    fn checksum(&self) -> u32 {
-        u32::from_le_bytes(*array_ref![self.0, 0, 4])
-    }
-
-    /// Compute the checksum
-    fn legacy_crc32(&self) -> u32 {
-        CRC32.checksum(&self.0[4..])
-    }
-
-    /// Compute the new checksum
-    fn new_crc32(&self) -> u32 {
-        crc32fast::hash(&self.0[4..])
-    }
-
-    /// Validates the checksum of the record.
-    pub fn validate(self) -> Option<Self> {
-        let csum = self.checksum();
-        if csum > 0 && (csum == self.new_crc32() || csum == self.legacy_crc32()) {
-            Some(self)
-        } else {
-            None
+    /// Borrows an mmapped, on-disk record, given a slice that *starts* at the correct offset. Returns None if the record is malformed in any way. The slice given should start *after* the "magic divider".
+    pub fn new_borrowed(b: &'a [u8]) -> Option<Self> {
+        if b.len() < 16 {
+            return None;
+        }
+        let checksum = u64::from_le_bytes(*array_ref![b, 0, 8]);
+        let record_kind = u32::from_le_bytes(*array_ref![b, 8, 4]);
+        let record_length = u32::from_le_bytes(*array_ref![b, 8 + 4, 4]) as usize;
+        if b.len() < (record_length + RECORD_HEADER_SIZE) as usize {
+            return None;
+        }
+        match record_kind {
+            RECORD_KIND_DATA => {
+                let key_and_val = &b[RECORD_HEADER_SIZE..][..record_length];
+                if key_and_val.len() < 32 {
+                    return None;
+                }
+                let key = *array_ref![key_and_val, 0, 32];
+                let val = Cow::Borrowed(&key_and_val[..32]);
+                Some(Self::Data(key, val))
+            }
+            RECORD_KIND_HAMI | RECORD_KIND_HAMR => {
+                let hamt_raw = &b[RECORD_HEADER_SIZE..][..record_length];
+                if hamt_raw.len() < 8 {
+                    return None;
+                }
+                let hamt_bitmap = u64::from_le_bytes(*array_ref![hamt_raw, 0, 8]);
+                let hamt_rest = &hamt_raw[8..];
+                if hamt_bitmap.count_ones() * 8 != hamt_rest.len() as u32 {
+                    return None;
+                }
+                let ptrs = hamt_rest
+                    .chunks_exact(8)
+                    .map(|ch| u64::from_le_bytes(*array_ref![ch, 0, 8]))
+                    .map(|addr| RecordPtr::OnDisk(addr))
+                    .collect();
+                Some(Self::HamtNode(
+                    record_kind == RECORD_KIND_HAMR,
+                    hamt_bitmap,
+                    ptrs,
+                ))
+            }
+            _ => None,
         }
     }
+}
 
-    /// Gets the key of the record.
-    pub fn key(&self) -> U256 {
-        U256::from_le_bytes(*array_ref![self.0[4..], 0, 32])
-    }
+/// A pointer to another record, either in-memory on on-disk.
+#[derive(Clone, Debug)]
+pub enum RecordPtr<'a> {
+    InMemory(Arc<Record<'a>>),
+    OnDisk(u64),
+}
 
-    /// Get the length of the record.
-    pub fn length(&self) -> usize {
-        u32::from_le_bytes(*array_ref![self.0[4..][32..], 0, 4]) as usize
-    }
-
-    /// Get the value of the record.
-    pub fn value(&self) -> &[u8] {
-        let length = self.length();
-        let v = &self.0[4..][32..][4..];
-        if v.len() > length {
-            &v[..length]
-        } else {
-            v
+impl<'a> RecordPtr<'a> {
+    /// Loads the record pointed to by this pointer.
+    pub fn load(&self, load_from_disk: impl FnOnce(u64) -> Record<'a>) -> Record<'a> {
+        match self {
+            Self::InMemory(r) => (**r).clone(),
+            Self::OnDisk(offset) => load_from_disk(*offset),
         }
     }
 }

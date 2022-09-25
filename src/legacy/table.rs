@@ -2,13 +2,13 @@ use std::{
     borrow::Cow,
     fs::File,
     io::{Seek, SeekFrom, Write},
-    time::{Duration, Instant},
+    time::{Instant},
 };
 
-use flume::Sender;
+
 use memmap::{MmapMut, MmapOptions};
 
-use crate::record::RECORD_SIZE;
+use crate::legacy::record::RECORD_SIZE;
 
 /// A highly concurrent table of records, the core datastructure in a database. This implements the low-level table structure, without any logic for lookup or insertion.
 pub struct Table {
