@@ -61,10 +61,10 @@ impl Table {
             // find candidates by searching the last 1 MiB for the magic divider
             let search_space = &mmap[4096..file_len as usize];
             let search_space =
-                &search_space[search_space.len() - (1_000_000).min(search_space.len())..];
+                &search_space[search_space.len() - (10_000_000).min(search_space.len())..];
             let posn_in_space = search_space
                 .windows(16)
-                .positions(|window| window == &divider.to_le_bytes())
+                .positions(|window| window == divider.to_le_bytes())
                 .collect_vec();
             if posn_in_space.is_empty() {
                 panic!("db corruption: no dividers found in the last part of db")
@@ -146,14 +146,15 @@ impl Table {
     /// Flushes everything to disk.
     pub fn flush(&mut self) {
         if self.dirty {
-            self.flush_helper(self.root.clone());
+            let (_, new_root) = self.flush_helper(self.root.clone());
             self.writer.flush().expect("fs fail");
             self.writer.sync_all().expect("fs fail");
             self.dirty = false;
+            self.root = new_root;
         }
     }
 
-    fn flush_helper<'a>(&mut self, ptr: Record<'a>) -> u64 {
+    fn flush_helper<'a>(&mut self, ptr: Record<'a>) -> (u64, Record<'a>) {
         // first, replace everything with flushed stuff
         let ptr = match ptr {
             Record::HamtNode(r, b, pp) => Record::HamtNode(
@@ -162,7 +163,7 @@ impl Table {
                 pp.into_iter()
                     .map(|p| match p {
                         RecordPtr::InMemory(m) => {
-                            RecordPtr::OnDisk(self.flush_helper((*m).clone()))
+                            RecordPtr::OnDisk(self.flush_helper((*m).clone()).0)
                         }
                         p => p,
                     })
@@ -173,7 +174,7 @@ impl Table {
         let curr_posn = self.writer.stream_position().expect("fs fail");
         ptr.write_bytes(self.divider, &mut self.writer)
             .expect("fs fail");
-        curr_posn
+        (curr_posn, ptr)
     }
 
     fn insert_helper<'a>(
@@ -213,7 +214,7 @@ impl Table {
                     let idx = (bitmap & ((1 << hindex) - 1)).count_ones();
                     log::trace!("depth={depth} idx={idx}");
                     let record = Record::Data(key, value.to_vec().into());
-                    let addr = self.flush_helper(record);
+                    let (addr, _) = self.flush_helper(record);
                     ptrs.insert(idx as usize, RecordPtr::OnDisk(addr));
                 }
                 Record::HamtNode(r, bitmap, ptrs)
