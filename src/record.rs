@@ -135,6 +135,10 @@ impl<'a> Record<'a> {
             h.finish()
         };
         null_checksum_buffer[16..][..8].copy_from_slice(&checksum.to_le_bytes());
+        null_checksum_buffer.resize(
+            null_checksum_buffer.len() + ((8 - null_checksum_buffer.len() % 8) % 8),
+            0xff,
+        );
         // return
         out.write_all(&null_checksum_buffer)?;
         Ok(null_checksum_buffer.len())
