@@ -20,52 +20,66 @@ const RECORD_HEADER_SIZE: usize = 16;
 
 impl<'a> Record<'a> {
     /// Borrows an mmapped, on-disk record, given a slice that *starts* at the correct offset. Returns None if the record is malformed in any way. The slice given should start *at* the "magic divider", which must be passed in.
-    pub fn new_borrowed(b: &'a [u8], divider: u128) -> Option<Self> {
+    pub fn new_borrowed(b: &'a [u8], divider: u128) -> anyhow::Result<Self> {
         if b.len() < 16 + 16 {
-            return None;
+            anyhow::bail!("not long enough");
         }
         if u128::from_le_bytes(*array_ref![b, 0, 16]) != divider {
-            return None;
+            anyhow::bail!("divider not found");
         }
-        let _checksum = u64::from_le_bytes(*array_ref![b, 0, 8]);
+        let b = &b[16..];
+        let checksum = u64::from_le_bytes(*array_ref![b, 0, 8]);
         let record_kind = u32::from_le_bytes(*array_ref![b, 8, 4]);
         let record_length = u32::from_le_bytes(*array_ref![b, 8 + 4, 4]) as usize;
         if b.len() < (record_length + RECORD_HEADER_SIZE) as usize {
-            return None;
+            anyhow::bail!("not long enough");
+        }
+        let computed_checksum = {
+            let mut h = SipHasher13::new_with_key(&divider.to_le_bytes());
+            h.write(&b[8..][..record_length + 8]);
+            h.finish()
+        };
+        if checksum != computed_checksum {
+            anyhow::bail!("invalid checksum")
         }
         match record_kind {
             RECORD_KIND_DATA => {
                 let key_and_val = &b[RECORD_HEADER_SIZE..][..record_length];
                 if key_and_val.len() < 32 {
-                    return None;
+                    anyhow::bail!("key_and_val not long enough");
                 }
                 let key = *array_ref![key_and_val, 0, 32];
-                let val = Cow::Borrowed(&key_and_val[..32]);
-                Some(Self::Data(key, val))
+                let val = Cow::Borrowed(&key_and_val[32..]);
+                Ok(Self::Data(key, val))
             }
             RECORD_KIND_HAMI | RECORD_KIND_HAMR => {
                 let hamt_raw = &b[RECORD_HEADER_SIZE..][..record_length];
                 if hamt_raw.len() < 8 {
-                    return None;
+                    anyhow::bail!("hamt not long enough");
                 }
                 let hamt_bitmap = u64::from_le_bytes(*array_ref![hamt_raw, 0, 8]);
                 let hamt_rest = &hamt_raw[8..];
                 if hamt_bitmap.count_ones() * 8 != hamt_rest.len() as u32 {
-                    return None;
+                    anyhow::bail!("hamt ptr count inconsistent with bitmap");
                 }
                 let ptrs = hamt_rest
                     .chunks_exact(8)
                     .map(|ch| u64::from_le_bytes(*array_ref![ch, 0, 8]))
                     .map(RecordPtr::OnDisk)
                     .collect();
-                Some(Self::HamtNode(
+                Ok(Self::HamtNode(
                     record_kind == RECORD_KIND_HAMR,
                     hamt_bitmap,
                     ptrs,
                 ))
             }
-            _ => None,
+            _ => anyhow::bail!("corrupt record kind"),
         }
+    }
+
+    /// Checks whether this is a root.
+    pub fn is_root(&self) -> bool {
+        matches!(self, Record::HamtNode(true, _, _))
     }
 
     /// Writes the bytes representation of this record, returning how many bytes were written. Must provide a u128 divider.
@@ -77,6 +91,8 @@ impl<'a> Record<'a> {
         mut out: impl std::io::Write,
     ) -> std::io::Result<usize> {
         let mut null_checksum_buffer = Vec::with_capacity(256);
+        // write the divider
+        null_checksum_buffer.write_all(&divider.to_le_bytes())?;
         // write a DUMMY checksum
         null_checksum_buffer.write_all(&[0u8; 8])?;
         // write the kind
@@ -115,10 +131,10 @@ impl<'a> Record<'a> {
         // compute checksum
         let checksum = {
             let mut h = SipHasher13::new_with_key(&divider.to_le_bytes());
-            h.write(&null_checksum_buffer[8..]);
+            h.write(&null_checksum_buffer[8 + 16..]);
             h.finish()
         };
-        null_checksum_buffer[0..8].copy_from_slice(&checksum.to_le_bytes());
+        null_checksum_buffer[16..][..8].copy_from_slice(&checksum.to_le_bytes());
         // return
         out.write_all(&null_checksum_buffer)?;
         Ok(null_checksum_buffer.len())
