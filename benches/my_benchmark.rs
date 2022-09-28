@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use meshanina::legacy::Mapping;
 use once_cell::sync::Lazy;
+use rand::Rng;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 const COUNT: u64 = 100000;
@@ -13,7 +14,7 @@ static DATABASE: Lazy<Mapping> = Lazy::new(|| {
     for i in 0..COUNT {
         mapping.insert(
             i.into(),
-            &std::iter::repeat_with(|| fastrand::u8(..))
+            &std::iter::repeat_with(|| rand::thread_rng().gen::<u8>())
                 .take(400)
                 .collect::<Vec<_>>(),
         );
