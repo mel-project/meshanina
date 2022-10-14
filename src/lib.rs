@@ -24,7 +24,7 @@ impl Mapping {
             .name("mesh-flush".into())
             .spawn(move || loop {
                 if let Some(inner) = inner_weak.upgrade() {
-                    inner.write().flush();
+                    inner.write().flush(true);
                     std::thread::sleep(Duration::from_secs(30))
                 } else {
                     return;
@@ -37,7 +37,7 @@ impl Mapping {
     /// Flushes the mapping to disk.
     pub fn flush(&self) {
         // TODO blocking reader is probably not too nice
-        self.inner.write().flush();
+        self.inner.write().flush(true);
     }
 
     /// Gets a key-value pair.

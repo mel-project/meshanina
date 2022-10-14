@@ -1,2 +1,5 @@
 /target
 Cargo.lock
+*.db
+perf.data
+perf.data.old

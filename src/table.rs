@@ -140,15 +140,20 @@ impl Table {
                 value,
             );
             self.dirty = true;
+            if fastrand::usize(0..10000) == 0 {
+                self.flush(false)
+            }
         }
     }
 
-    /// Flushes everything to disk.
-    pub fn flush(&mut self) {
+    /// Flushes everything to disk. The caller specifies whether or not to actually fully fsync
+    pub fn flush(&mut self, fsync: bool) {
         if self.dirty {
             let (_, new_root) = self.flush_helper(self.root.clone());
-            self.writer.flush().expect("fs fail");
-            self.writer.sync_all().expect("fs fail");
+            if fsync {
+                self.writer.flush().expect("fs fail");
+                self.writer.sync_all().expect("fs fail");
+            }
             self.dirty = false;
             self.root = new_root;
         }
@@ -177,14 +182,14 @@ impl Table {
         (curr_posn, ptr)
     }
 
-    fn insert_helper<'a>(
+    fn insert_helper(
         &mut self,
         depth: usize,
-        hamt: Record<'a>,
+        hamt: Record<'static>,
         ikey: u128,
         key: [u8; 32],
         value: &[u8],
-    ) -> Record<'a> {
+    ) -> Record<'static> {
         match hamt {
             Record::Data(existing_k, existing_v) => {
                 let a =
@@ -204,7 +209,7 @@ impl Table {
                 if (bitmap >> hindex) & 1 == 1 {
                     let idx = (bitmap & ((1 << hindex) - 1)).count_ones();
                     let p = ptrs[idx as usize].clone();
-                    let ptr = p.load(|p| self.load_record(p)).into_owned();
+                    let ptr = p.load(|p| self.load_record(p).into_owned());
                     // recurse down
                     let c = self.insert_helper(depth + 1, ptr, ikey >> 6, key, value);
                     ptrs[idx as usize] = RecordPtr::InMemory(Arc::new(c));
@@ -234,7 +239,7 @@ mod tests {
             let k = *blake3::hash(format!("key{}", ctr).as_bytes()).as_bytes();
             tab.insert(k, &ctr.to_le_bytes());
             if ctr % 17 == 0 {
-                tab.flush();
+                tab.flush(false);
             }
             let b = tab.lookup(k).unwrap();
             assert_eq!(array_ref![&b, 0, 8], &ctr.to_le_bytes());
