@@ -2,8 +2,8 @@ use std::time::Instant;
 
 use rand::RngCore;
 
-const DB_SIZE: u64 = 1_000_000;
-const VALUE_SIZE: usize = 200;
+const DB_SIZE: u64 = 10_000_000;
+const VALUE_SIZE: usize = 600;
 
 trait BenchTarget {
     fn name(&self) -> &'static str;
@@ -31,6 +31,7 @@ fn main() {
 }
 
 fn run_once(target: &impl BenchTarget) {
+    let name = target.name();
     let start = Instant::now();
     for ctr in 0..DB_SIZE {
         let ctr = ctr.to_le_bytes();
@@ -39,5 +40,13 @@ fn run_once(target: &impl BenchTarget) {
         rand::thread_rng().fill_bytes(&mut value);
         target.insert(*key.as_bytes(), &value);
     }
-    eprintln!("{DB_SIZE} create: {:?}", start.elapsed())
+    eprintln!("{name}: {DB_SIZE} create: {:?}", start.elapsed());
+    let start = Instant::now();
+    for _ in 0..DB_SIZE {
+        let ctr = fastrand::u64(0..DB_SIZE);
+        let ctr = ctr.to_le_bytes();
+        let key = blake3::hash(&ctr);
+        let _ = target.get(*key.as_bytes());
+    }
+    eprintln!("{name}: {DB_SIZE} access: {:?}", start.elapsed());
 }
