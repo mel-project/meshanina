@@ -34,13 +34,15 @@ impl<'a> Record<'a> {
         if b.len() < (record_length + RECORD_HEADER_SIZE) as usize {
             anyhow::bail!("not long enough");
         }
-        let computed_checksum = {
-            let mut h = SipHasher13::new_with_key(&divider.to_le_bytes());
-            h.write(&b[8..][..record_length + 8]);
-            h.finish()
-        };
-        if checksum != computed_checksum {
-            anyhow::bail!("invalid checksum")
+        if record_kind == RECORD_KIND_HAMR {
+            let computed_checksum = {
+                let mut h = SipHasher13::new_with_key(&divider.to_le_bytes());
+                h.write(&b[8..][..record_length + 8]);
+                h.finish()
+            };
+            if checksum != computed_checksum {
+                anyhow::bail!("invalid checksum")
+            }
         }
         match record_kind {
             RECORD_KIND_DATA => {
@@ -90,7 +92,7 @@ impl<'a> Record<'a> {
         divider: u128,
         mut out: impl std::io::Write,
     ) -> std::io::Result<usize> {
-        let mut null_checksum_buffer = Vec::with_capacity(256);
+        let mut null_checksum_buffer = Vec::with_capacity(512);
         // write the divider
         null_checksum_buffer.write_all(&divider.to_le_bytes())?;
         // write a DUMMY checksum
@@ -135,10 +137,10 @@ impl<'a> Record<'a> {
             h.finish()
         };
         null_checksum_buffer[16..][..8].copy_from_slice(&checksum.to_le_bytes());
-        null_checksum_buffer.resize(
-            null_checksum_buffer.len() + ((8 - null_checksum_buffer.len() % 8) % 8),
-            0xff,
-        );
+        // null_checksum_buffer.resize(
+        //     null_checksum_buffer.len() + ((8 - null_checksum_buffer.len() % 8) % 8),
+        //     0xff,
+        // );
         // return
         out.write_all(&null_checksum_buffer)?;
         Ok(null_checksum_buffer.len())

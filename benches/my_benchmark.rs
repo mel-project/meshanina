@@ -6,7 +6,7 @@ use once_cell::sync::Lazy;
 use rand::Rng;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-const COUNT: u64 = 100000;
+const COUNT: u64 = 1000000;
 
 static DATABASE: Lazy<Mapping> = Lazy::new(|| {
     let fname = PathBuf::from("/tmp/bench.db");

@@ -1,14 +1,30 @@
-use std::time::Instant;
+use std::{collections::BTreeMap, path::Path, time::Instant};
 
+use ethnum::U256;
+use parking_lot::RwLock;
 use rand::RngCore;
 
-const DB_SIZE: u64 = 10_000_000;
+const DB_SIZE: u64 = 1_000_000;
 const VALUE_SIZE: usize = 600;
 
 trait BenchTarget {
     fn name(&self) -> &'static str;
     fn insert(&self, k: [u8; 32], v: &[u8]);
     fn get(&self, k: [u8; 32]) -> Option<Vec<u8>>;
+}
+
+impl BenchTarget for RwLock<BTreeMap<[u8; 32], Vec<u8>>> {
+    fn name(&self) -> &'static str {
+        "in-memory"
+    }
+
+    fn insert(&self, k: [u8; 32], v: &[u8]) {
+        self.write().insert(k, v.to_vec());
+    }
+
+    fn get(&self, k: [u8; 32]) -> Option<Vec<u8>> {
+        self.read().get(&k).map(|v| v.to_vec())
+    }
 }
 
 impl BenchTarget for meshanina::Mapping {
@@ -25,9 +41,27 @@ impl BenchTarget for meshanina::Mapping {
     }
 }
 
+impl BenchTarget for meshanina::legacy::Mapping {
+    fn name(&self) -> &'static str {
+        "meshanina-legacy"
+    }
+
+    fn insert(&self, k: [u8; 32], v: &[u8]) {
+        self.insert(U256::from_le_bytes(k), v)
+    }
+
+    fn get(&self, k: [u8; 32]) -> Option<Vec<u8>> {
+        self.get(U256::from_le_bytes(k)).map(|v| v.to_vec())
+    }
+}
+
 fn main() {
     let m2 = meshanina::Mapping::open("v2.db").unwrap();
+    let m1 = meshanina::legacy::Mapping::open(Path::new("v1.db")).unwrap();
+    let in_mem = RwLock::new(BTreeMap::new());
     run_once(&m2);
+    run_once(&m1);
+    run_once(&in_mem);
 }
 
 fn run_once(target: &impl BenchTarget) {
