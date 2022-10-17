@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    io::{Seek, SeekFrom, Write},
+    io::{BufWriter, Seek, SeekFrom, Write},
     path::Path,
     sync::Arc,
 };
@@ -24,7 +24,9 @@ pub struct Table {
     /// Mmap of the file
     mmap: MmapMut,
     /// Append-writer
-    writer: std::fs::File,
+    writer: BufWriter<std::fs::File>,
+    /// Pointer
+    ptr: u64,
 }
 
 impl Table {
@@ -72,24 +74,28 @@ impl Table {
             for posn in posn_in_space.into_iter().rev() {
                 if let Ok(rec) = Record::new_borrowed(&search_space[posn..], divider) {
                     if rec.is_root() {
+                        let ptr = handle.stream_position()?;
                         return Ok(Table {
                             root: rec.into_owned(),
                             dirty: false,
                             divider,
                             mmap,
-                            writer: handle,
+                            writer: BufWriter::with_capacity(1_000_000, handle),
+                            ptr,
                         });
                     }
                 }
             }
             panic!("db corruption: dividers found but none of the elements were valid roots")
         }
+        let ptr = handle.stream_position()?;
         Ok(Table {
             root: Record::HamtNode(true, 0, vec![]),
             dirty: false,
             divider,
             mmap,
-            writer: handle,
+            writer: BufWriter::with_capacity(1_000_000, handle),
+            ptr,
         })
     }
 
@@ -139,6 +145,7 @@ impl Table {
                 key,
                 value,
             );
+
             self.dirty = true;
             if fastrand::usize(0..10000) == 0 {
                 self.flush(false)
@@ -150,9 +157,9 @@ impl Table {
     pub fn flush(&mut self, fsync: bool) {
         if self.dirty {
             let (_, new_root) = self.flush_helper(self.root.clone());
+            self.writer.flush().expect("flush failed");
             if fsync {
-                self.writer.flush().expect("fs fail");
-                self.writer.sync_all().expect("fs fail");
+                self.writer.get_ref().sync_all().expect("fs fail");
             }
             self.dirty = false;
             self.root = new_root;
@@ -176,9 +183,11 @@ impl Table {
             ),
             p => p,
         };
-        let curr_posn = self.writer.stream_position().expect("fs fail");
-        ptr.write_bytes(self.divider, &mut self.writer)
+        let curr_posn = self.ptr;
+        let n = ptr
+            .write_bytes(self.divider, &mut self.writer)
             .expect("fs fail");
+        self.ptr += n as u64;
         (curr_posn, ptr)
     }
 
@@ -219,8 +228,8 @@ impl Table {
                     let idx = (bitmap & ((1 << hindex) - 1)).count_ones();
                     log::trace!("depth={depth} idx={idx}");
                     let record = Record::Data(key, value.to_vec().into());
-                    let (addr, _) = self.flush_helper(record);
-                    ptrs.insert(idx as usize, RecordPtr::OnDisk(addr));
+                    // let (addr, _) = self.flush_helper(record);
+                    ptrs.insert(idx as usize, RecordPtr::InMemory(Arc::new(record)));
                 }
                 Record::HamtNode(r, bitmap, ptrs)
             }
