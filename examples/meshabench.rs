@@ -1,10 +1,11 @@
 use std::{collections::BTreeMap, path::Path, time::Instant};
 
 use ethnum::U256;
+use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use rand::RngCore;
 
-const DB_SIZE: u64 = 1_000_000;
+static DB_SIZE: Lazy<u64> = Lazy::new(|| std::env::var("DB_SIZE").unwrap().parse().unwrap());
 const VALUE_SIZE: usize = 600;
 
 trait BenchTarget {
@@ -67,20 +68,20 @@ fn main() {
 fn run_once(target: &impl BenchTarget) {
     let name = target.name();
     let start = Instant::now();
-    for ctr in 0..DB_SIZE {
+    for ctr in 0..*DB_SIZE {
         let ctr = ctr.to_le_bytes();
         let key = blake3::hash(&ctr);
         let mut value = vec![0u8; VALUE_SIZE];
         rand::thread_rng().fill_bytes(&mut value);
         target.insert(*key.as_bytes(), &value);
     }
-    eprintln!("{name}: {DB_SIZE} create: {:?}", start.elapsed());
+    eprintln!("{name}: {} create: {:?}", *DB_SIZE, start.elapsed());
     let start = Instant::now();
-    for _ in 0..DB_SIZE {
-        let ctr = fastrand::u64(0..DB_SIZE);
+    for _ in 0..*DB_SIZE {
+        let ctr = fastrand::u64(0..*DB_SIZE);
         let ctr = ctr.to_le_bytes();
         let key = blake3::hash(&ctr);
         let _ = target.get(*key.as_bytes());
     }
-    eprintln!("{name}: {DB_SIZE} access: {:?}", start.elapsed());
+    eprintln!("{name}: {} access: {:?}", *DB_SIZE, start.elapsed());
 }

@@ -63,7 +63,7 @@ impl Table {
             // find candidates by searching the last 1 MiB for the magic divider
             let search_space = &mmap[4096..file_len as usize];
             let search_space =
-                &search_space[search_space.len() - (10_000_000).min(search_space.len())..];
+                &search_space[search_space.len() - (100_000_000).min(search_space.len())..];
             let posn_in_space = search_space
                 .windows(16)
                 .positions(|window| window == divider.to_le_bytes())
@@ -147,7 +147,7 @@ impl Table {
             );
 
             self.dirty = true;
-            if fastrand::usize(0..10000) == 0 {
+            if fastrand::usize(0..1000) == 0 {
                 self.flush(false)
             }
         }
