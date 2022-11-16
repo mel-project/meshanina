@@ -4,6 +4,7 @@ use bytes::Bytes;
 use parking_lot::RwLock;
 use table::Table;
 
+#[cfg(target_os = "linux")]
 pub mod legacy;
 mod record;
 mod table;
