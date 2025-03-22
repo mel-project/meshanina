@@ -1,6 +1,5 @@
-use std::{collections::BTreeMap, path::Path, time::Instant};
+use std::{collections::BTreeMap, time::Instant};
 
-use ethnum::U256;
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use rand::RngCore;

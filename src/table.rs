@@ -9,7 +9,6 @@ use arrayref::array_ref;
 use fs2::FileExt;
 use itertools::Itertools;
 use memmap::{MmapMut, MmapOptions};
-use rand::Rng;
 
 use crate::record::{Record, RecordPtr};
 
@@ -48,8 +47,9 @@ impl Table {
             handle.set_len(4096)?;
             handle.seek(SeekFrom::Start(0))?;
             handle.write_all(b"meshanina2")?;
-            let random_divider: u128 = rand::thread_rng().gen();
-            handle.write_all(&random_divider.to_le_bytes())?;
+            let mut random_divider = [0u8; 16];
+            getrandom::fill(&mut random_divider).unwrap();
+            handle.write_all(&random_divider)?;
         }
         // mmap everything
         let mut mmap = unsafe { MmapOptions::new().len(1 << 39).map_mut(&handle).unwrap() };
