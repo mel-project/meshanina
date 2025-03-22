@@ -4,8 +4,6 @@ use bytes::Bytes;
 use parking_lot::RwLock;
 use table::Table;
 
-#[cfg(target_os = "linux")]
-pub mod legacy;
 mod record;
 mod table;
 
@@ -43,16 +41,14 @@ impl Mapping {
 
     /// Gets a key-value pair.
     pub fn get(&self, key: [u8; 32]) -> Option<Bytes> {
-        Some(Bytes::from(
-            lz4_flex::decompress_size_prepended(&self.inner.read().lookup(key)?).expect("db fail"),
-        ))
+        let inner = self.inner.read();
+        let bts = inner.lookup(key)?;
+        Some(Bytes::copy_from_slice(&bts))
     }
 
     /// Inserts a key-value pair.
     pub fn insert(&self, key: [u8; 32], value: &[u8]) {
-        self.inner
-            .write()
-            .insert(key, &lz4_flex::compress_prepend_size(value));
+        self.inner.write().insert(key, value);
     }
 }
 

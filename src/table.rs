@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    io::{BufWriter, Seek, SeekFrom, Write},
+    io::{Seek, SeekFrom, Write},
     path::Path,
     sync::Arc,
 };
@@ -13,6 +13,8 @@ use rand::Rng;
 
 use crate::record::{Record, RecordPtr};
 
+pub const MAX_FLUSH_INTERVAL: u64 = 10 * 1024 * 1024;
+
 /// Low-level interface to the database.
 pub struct Table {
     /// Root record. Must be a HAMT!
@@ -24,9 +26,11 @@ pub struct Table {
     /// Mmap of the file
     mmap: MmapMut,
     /// Append-writer
-    writer: BufWriter<std::fs::File>,
+    writer: std::fs::File,
     /// Pointer
     ptr: u64,
+    /// Last flush position
+    last_flush_ptr: u64,
 }
 
 impl Table {
@@ -36,6 +40,7 @@ impl Table {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(fname)?;
         handle.try_lock_exclusive()?;
         // ensure the existence of the reserved region
@@ -60,10 +65,10 @@ impl Table {
         // if the file is long, we attempt to find the last valid HAMT root node.
         if file_len > 4096 {
             log::debug!("file length {file_len}, finding last HAMT node");
-            // find candidates by searching the last 1 MiB for the magic divider
+
             let search_space = &mmap[4096..file_len as usize];
-            let search_space =
-                &search_space[search_space.len() - (100_000_000).min(search_space.len())..];
+            let search_space = &search_space
+                [search_space.len() - (MAX_FLUSH_INTERVAL as usize * 2).min(search_space.len())..];
             let posn_in_space = search_space
                 .windows(16)
                 .positions(|window| window == divider.to_le_bytes())
@@ -80,8 +85,9 @@ impl Table {
                             dirty: false,
                             divider,
                             mmap,
-                            writer: BufWriter::with_capacity(1_000_000, handle),
+                            writer: handle,
                             ptr,
+                            last_flush_ptr: ptr,
                         });
                     }
                 }
@@ -94,8 +100,9 @@ impl Table {
             dirty: false,
             divider,
             mmap,
-            writer: BufWriter::with_capacity(1_000_000, handle),
+            writer: handle,
             ptr,
+            last_flush_ptr: ptr,
         })
     }
 
@@ -147,8 +154,11 @@ impl Table {
             );
 
             self.dirty = true;
-            if fastrand::usize(0..1000) == 0 {
-                self.flush(false)
+
+            // Flush when the pointer has moved at least 10MB since the last flush
+            if (self.ptr - self.last_flush_ptr) >= MAX_FLUSH_INTERVAL {
+                self.flush(false);
+                self.last_flush_ptr = self.ptr;
             }
         }
     }
@@ -159,7 +169,7 @@ impl Table {
             let (_, new_root) = self.flush_helper(self.root.clone());
             self.writer.flush().expect("flush failed");
             if fsync {
-                self.writer.get_ref().sync_all().expect("fs fail");
+                self.writer.sync_all().expect("fs fail");
             }
             self.dirty = false;
             self.root = new_root;
