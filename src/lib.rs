@@ -1,4 +1,4 @@
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{borrow::Cow, path::Path, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use parking_lot::RwLock;
@@ -42,10 +42,10 @@ impl Mapping {
     }
 
     /// Gets a key-value pair.
-    pub fn get(&self, key: [u8; 32]) -> Option<Bytes> {
+    pub fn get(&self, key: [u8; 32]) -> Option<Cow<'_, [u8]>> {
         let inner = self.inner.read();
         let bts = inner.lookup(key)?;
-        Some(Bytes::copy_from_slice(&bts))
+        Some(unsafe { std::mem::transmute(bts) })
     }
 
     /// Inserts a key-value pair.
