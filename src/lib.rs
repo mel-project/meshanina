@@ -21,12 +21,14 @@ impl Mapping {
         // TODO a better, "batch-timer" approach
         std::thread::Builder::new()
             .name("mesh-flush".into())
-            .spawn(move || loop {
-                if let Some(inner) = inner_weak.upgrade() {
-                    inner.write().flush(true);
-                    std::thread::sleep(Duration::from_secs(30))
-                } else {
-                    return;
+            .spawn(move || {
+                loop {
+                    if let Some(inner) = inner_weak.upgrade() {
+                        inner.write().flush(true);
+                        std::thread::sleep(Duration::from_secs(30))
+                    } else {
+                        return;
+                    }
                 }
             })
             .unwrap();

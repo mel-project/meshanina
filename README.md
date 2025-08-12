@@ -29,7 +29,7 @@ In-memory, we keep track of an Arc-linked bunch of new nodes before they get flu
       - n\*8 bytes: 64-bit pointers to absolute offsets
     - for data nodes, this is:
       - 32 bytes: key
-      - n bytes: value (LZ4 compressed with prepended size)
+      - n bytes: value
 
 ## Recovery
 
@@ -40,5 +40,3 @@ Assuming that there are no "gaps" in correctly written blocks --- that is, if th
 ## Lookup and insertion
 
 Starting from the latest HAMT root node, do the usual HAMT lookup/insertion, using the 256-bit key value 6 bits at a time. The implementation currently only uses the first 128 bits of the key for indexing purposes.
-
-The library automatically compresses values using LZ4 compression with size prepended before storing them in the database, and decompresses them when retrieving.
